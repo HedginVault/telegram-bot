@@ -47,6 +47,15 @@ function setup(overrides: Partial<HedgeApi> = {}) {
     getHoldings: vi.fn(async () => holdings),
     getStrategies: vi.fn(async () => strategies),
     getQuote: vi.fn(async () => quote),
+    build: vi.fn(async () => {
+      throw new Error("unexpected build");
+    }),
+    send: vi.fn(async () => {
+      throw new Error("unexpected send");
+    }),
+    status: vi.fn(async () => {
+      throw new Error("unexpected status");
+    }),
     ...overrides,
   };
   const bot = createBot({ token: "123:test", allowedUserIds: new Set([ALLOWED_USER]), api });

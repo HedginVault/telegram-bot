@@ -25,6 +25,23 @@ Read-only. The bot holds no Solana signing key, so it cannot move funds.
 API responses are checked against the documented V1 contract. A response that does not
 match is reported as `contract_mismatch` instead of being shown half-parsed.
 
+## API checker
+
+`yarn check-api` probes the V1 API with the key in `.env` and prints a pass/fail table with
+response times. It exits non-zero when any check fails.
+
+- Auth: missing, wrong, and malformed keys return 401.
+- Contract: `/vaults`, holdings, strategies, quotes, and pool search match the documented shapes for up to 3 vaults.
+- Validation: bad addresses, slippage, amounts, and mint pairs return 400; unknown routes 404.
+- Error bodies use `{ error: { code, message } }` and never leak provider logs or stack traces.
+
+`yarn check-api --build` also asks the API to build one unsigned 0.01-token swap per vault
+and checks the transaction and ticket. Nothing is signed or sent, so no funds move. It needs
+a key with the `jupiter/swap` action.
+
+The checker sends about 12 requests per vault and checks at most 3 vaults to stay under the
+API's 60 requests per minute per IP.
+
 ## Setup
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
