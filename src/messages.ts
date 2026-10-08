@@ -230,6 +230,7 @@ export function executionMessage(action: PendingAction, progress: Progress[], ou
       break;
     case "failed":
       lines.push(`<b>Failed</b> (${escapeHtml(outcome.code)}): ${escapeHtml(outcome.message)}`);
+      if (errorHint(outcome.code)) lines.push(`<i>${escapeHtml(errorHint(outcome.code) ?? "")}</i>`);
       if (outcome.signature) lines.push(`Transaction ${txLink(outcome.signature)}`);
       if (outcome.signatures.length > 0) lines.push("<i>Earlier transactions in this action already landed. Check the position before retrying.</i>");
       break;
@@ -303,6 +304,18 @@ export function lpFormMessage(form: LpForm, range: PriceRange | string | undefin
   );
   return lines.join("\n");
 }
+
+/** The API redacts 5xx messages; these codes are specific enough to say what to do next. */
+const ERROR_HINTS: Record<string, string> = {
+  JupiterUnsupportedCpiRoute: "Jupiter picked a route the vault program cannot run. Try a different amount or token, or try again shortly.",
+  JupiterQuoteFailed: "Jupiter could not quote right now. Try again in a moment.",
+  JupiterSwapFailed: "Jupiter could not build the swap right now. Try again in a moment.",
+  RateLimited: "Too many requests. Wait a minute and try again.",
+  InvalidTicket: "The build expired before it was sent. Start the action again.",
+  Expired: "The transaction expired before it landed. It did not execute; you can try again.",
+};
+
+export const errorHint = (code: string): string | undefined => ERROR_HINTS[code];
 
 export function errorMessage(title: string, detail?: string): string {
   return detail ? `❌ <b>${escapeHtml(title)}</b>\n${escapeHtml(detail)}` : `❌ ${escapeHtml(title)}`;

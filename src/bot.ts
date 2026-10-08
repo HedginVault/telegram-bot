@@ -3,7 +3,7 @@ import { type Context, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery, message } from "telegraf/filters";
 import { type PendingAction, toActionRequest } from "./actions";
 import { InputError, applyFormOp, applyFormText } from "./forms";
-import { HELP_MESSAGE, errorMessage, executionMessage, fitMessage } from "./messages";
+import { HELP_MESSAGE, errorHint, errorMessage, executionMessage, fitMessage } from "./messages";
 import { type ScreenDeps, renderScreen } from "./screens";
 import { type RenderedScreen, type Screen, ScreenNotice, type TextField, button, createIdStore, decodeScreen, keyboard } from "./ui";
 
@@ -21,7 +21,10 @@ export function describeError(error: unknown): string {
 const isUserFacing = (error: unknown) => error instanceof UsageError || error instanceof ScreenNotice || error instanceof InputError;
 
 function errorReply(error: unknown): string {
-  if (error instanceof ApiError) return errorMessage(`API error ${error.status} (${error.code})`, error.message);
+  if (error instanceof ApiError) {
+    const hint = errorHint(error.code);
+    return errorMessage(`API error ${error.status} (${error.code})`, hint ? `${error.message}\n${hint}` : error.message);
+  }
   return errorMessage(describeError(error));
 }
 

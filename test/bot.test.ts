@@ -411,6 +411,21 @@ describe("trading", () => {
     expect(api.build).toHaveBeenCalledWith("strategy/close", { vault: VAULT, strategy: "StratJup" });
   });
 
+  it("explains a redacted Jupiter route failure in plain words", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => {
+      throw new ApiError(502, "JupiterUnsupportedCpiRoute", "Service temporarily unavailable");
+    });
+    const ui = setup(api, trading);
+    await openSwapQuote(ui);
+    await ui.click("⚡ Swap SOL → USDC");
+    await ui.click("✅ Confirm and send");
+    await ui.settle();
+    expect(ui.lastScreen().text).toContain("<b>Failed</b> (JupiterUnsupportedCpiRoute): Service temporarily unavailable");
+    expect(ui.lastScreen().text).toContain("<i>Jupiter picked a route the vault program cannot run. Try a different amount or token, or try again shortly.</i>");
+    expect(ui.api.send).not.toHaveBeenCalled();
+  });
+
   it("shows a refusal when the API builds a transaction for another payer", async () => {
     const other: Trading = { signer: keypairSigner(Keypair.generate()) };
     const { send, click, lastScreen, api, settle } = setup(tradingApi(), other);
