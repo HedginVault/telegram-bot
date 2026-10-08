@@ -1,19 +1,22 @@
+import type { Keypair } from "@solana/web3.js";
 import { type Context, Markup, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery } from "telegraf/filters";
+import { type PendingAction, toBuildRequest } from "./actions";
 import { ApiError, type HedgeApi, type VaultSummary } from "./api";
-import { HELP_MESSAGE, errorMessage, fitMessage, quoteMessage } from "./messages";
+import { type Outcome, type Progress, execute } from "./executor";
+import { HELP_MESSAGE, errorMessage, executionMessage, fitMessage, quoteMessage } from "./messages";
 import {
   DEFAULT_SLIPPAGE_BPS,
-  type PairStore,
   type RenderedScreen,
   type Screen,
+  type ScreenDeps,
   ScreenNotice,
-  createPairStore,
+  createIdStore,
   decodeScreen,
   encodeScreen,
   renderScreen,
 } from "./screens";
-
+import type { SigningPolicy } from "./signer";
 
 /** An input problem the user can fix by retyping the command. */
 class UsageError extends Error {}
@@ -66,16 +69,70 @@ async function resolveVault(api: HedgeApi, reference: string | undefined, usage:
   return vault;
 }
 
+export interface Trading {
+  manager: Keypair;
+  policy: SigningPolicy;
+}
+
 export function createBot(options: {
   token: string;
   allowedUserIds: ReadonlySet<number>;
   api: HedgeApi;
-  pairs?: PairStore;
+  /** Absent means read-only: no trade buttons, nothing signs. */
+  trading?: Trading;
+  /** Actions outlive their button tap; tests pass a collector to await them. */
+  runInBackground?: (task: Promise<void>) => void;
 }): Telegraf {
-  const { api } = options;
-  const deps = { api, pairs: options.pairs ?? createPairStore() };
+  const { api, trading } = options;
+  const deps: ScreenDeps = {
+    api,
+    pairs: createIdStore(),
+    positions: createIdStore(),
+    actions: createIdStore(),
+    trading: trading !== undefined,
+  };
   const render = (screen: Screen) => renderScreen(screen, deps);
+  const runInBackground = options.runInBackground ?? ((task: Promise<void>) => void task);
   const bot = new Telegraf(options.token);
+  // ponytail: one action at a time for the whole bot; per-vault locks if several managers share it.
+  let executing = false;
+
+  async function runAction(ctx: Context, actionId: string): Promise<void> {
+    if (!trading) throw new ScreenNotice("Trading is off. Set MANAGER_KEYPAIR_PATH to enable it.");
+    if (executing) {
+      await ctx.answerCbQuery("Another transaction is still running. Wait for it to finish.", { show_alert: true });
+      return;
+    }
+    const action = deps.actions.take(actionId);
+    if (!action) throw new ScreenNotice("This confirmation was already used or has expired. Start again from /start.");
+    executing = true;
+    await ctx.answerCbQuery();
+    runInBackground(trackAction(ctx, action, trading));
+  }
+
+  async function trackAction(ctx: Context, action: PendingAction, { manager, policy }: Trading): Promise<void> {
+    const progress: Progress[] = [];
+    const done = Markup.inlineKeyboard([
+      [Markup.button.callback("⬅️ Vault", encodeScreen({ kind: "vault", vault: action.vault })), Markup.button.callback("🏦 Vaults", encodeScreen({ kind: "vaults" }))],
+    ]).reply_markup;
+    const show = (outcome?: Outcome) =>
+      editScreen(ctx, { html: executionMessage(action, progress, outcome), keyboard: outcome ? done : { inline_keyboard: [] } });
+    try {
+      await show();
+      const outcome = await execute(toBuildRequest(action), { api, manager, policy }, async (step) => {
+        progress.push(step);
+        // A failed progress edit must not interrupt a transaction that is already in flight.
+        await show().catch(() => undefined);
+      });
+      console.info("[telegram-bot] action finished", { action: action.kind, vault: action.vault, outcome: outcome.kind, signatures: outcome.signatures });
+      await show(outcome);
+    } catch (error) {
+      console.error("[telegram-bot] action crashed", { action: action.kind, error: describeError(error) });
+      await replyHtml(ctx, errorReply(error)).catch(() => undefined);
+    } finally {
+      executing = false;
+    }
+  }
 
   // Unknown users get no reply, so the bot does not confirm it exists.
   bot.use((ctx, next) => (ctx.from && options.allowedUserIds.has(ctx.from.id) ? next() : undefined));
@@ -103,6 +160,10 @@ export function createBot(options: {
     const screen = decodeScreen(ctx.callbackQuery.data);
     if (!screen) {
       await ctx.answerCbQuery("Unknown button. Send /start.");
+      return;
+    }
+    if (screen.kind === "execute") {
+      await runAction(ctx, screen.actionId);
       return;
     }
     // Stop the button's loading spinner right away; rendering can take a few API calls.

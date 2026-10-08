@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { type Screen, createPairStore, decodeScreen, encodeScreen, percentOf } from "../src/screens";
+import { type Screen, createIdStore, decodeScreen, encodeScreen, percentOf } from "../src/screens";
 import { SOL, USDC, VAULT } from "./fixtures";
 
 const screens: Screen[] = [
@@ -10,6 +10,9 @@ const screens: Screen[] = [
   { kind: "quotePick", vault: VAULT },
   { kind: "quoteAmount", pairId: "AbC_-012345" },
   { kind: "quote", pairId: "AbC_-012345", percent: 100 },
+  { kind: "position", refId: "AbC_-012345" },
+  { kind: "confirm", actionId: "AbC_-012345" },
+  { kind: "execute", actionId: "AbC_-012345" },
 ];
 
 describe("screen callback data", () => {
@@ -22,7 +25,7 @@ describe("screen callback data", () => {
   });
 
   it("rejects data no button of ours produces", () => {
-    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, "qq:AbC_-012345:33", "qq:AbC_-012345:1000", "qa:short", `vaults:${VAULT}`]) {
+    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, "qq:AbC_-012345:33", "qq:AbC_-012345:1000", "qa:short", `vaults:${VAULT}`, "x:", "x:AbC_-0123456", "c:../etc/pass"]) {
       expect(decodeScreen(data)).toBeUndefined();
     }
   });
@@ -45,7 +48,7 @@ describe("pair store", () => {
   };
 
   it("issues distinct ids that decode as quote buttons", () => {
-    const store = createPairStore();
+    const store = createIdStore();
     const a = store.put(pair);
     const b = store.put(pair);
     expect(a).not.toBe(b);
@@ -53,8 +56,16 @@ describe("pair store", () => {
     expect(store.get(a)).toEqual(pair);
   });
 
+  it("hands out an entry only once with take", () => {
+    const store = createIdStore();
+    const id = store.put(pair);
+    expect(store.take(id)).toEqual(pair);
+    expect(store.take(id)).toBeUndefined();
+    expect(store.get(id)).toBeUndefined();
+  });
+
   it("evicts the oldest pair past its limit", () => {
-    const store = createPairStore(2);
+    const store = createIdStore(2);
     const first = store.put(pair);
     const second = store.put(pair);
     const third = store.put(pair);

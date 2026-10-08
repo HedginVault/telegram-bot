@@ -10,7 +10,8 @@ The API contract lives in `app/docs/manager-api.md` in the sibling `app/` reposi
 
 ## Commands
 
-Read-only. The bot holds no Solana signing key, so it cannot move funds.
+Without `MANAGER_KEYPAIR_PATH` the bot is read-only and cannot move funds. `/start` opens a
+button menu; the commands below also work.
 
 | Command | What it shows |
 | --- | --- |
@@ -24,6 +25,40 @@ Read-only. The bot holds no Solana signing key, so it cannot move funds.
 
 API responses are checked against the documented V1 contract. A response that does not
 match is reported as `contract_mismatch` instead of being shown half-parsed.
+
+## Trading
+
+Trading is off unless `MANAGER_KEYPAIR_PATH` points to a Solana CLI keypair file (a JSON
+array of 64 numbers). That key must be the vault's current authority and the API key's
+manager. With it set, these buttons appear:
+
+| Where | Button | API builder |
+| --- | --- | --- |
+| Quote result | ⚡ Swap | `jupiter/swap`, 50 bps slippage |
+| DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
+| DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
+| DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
+| Strategies | 🗑 Close empty strategy | `strategy/close` |
+
+Every action shows a confirm screen first. Then the bot builds, checks, signs, sends, and
+polls each transaction, editing one message with live progress and Solscan links.
+
+Safety rules the bot enforces:
+
+- **Inspect before signing.** Every transaction in a batch must be v0, paid by the manager
+  key, already signed by any other required signer, and call only the Hedge Vault program,
+  ComputeBudget, Associated Token Account, Meteora DLMM, or Jupiter at the top level. The
+  priority fee is capped at 100,000 microLamports per CU. Anything else is refused unsigned.
+- **One shot.** A confirm button works once. Only one action runs at a time.
+- **No blind retries.** An ambiguous send is polled by its receipt. The bot never rebuilds
+  after it, because a rebuild could execute the action twice. If it cannot tell, it says so
+  and links the transaction.
+
+Opening a new DLMM position is not supported: V1 pool search does not return the pool's
+active bin, which a safe range needs.
+
+The keypair holds real funds on mainnet. Use a dedicated demo vault with its own authority
+key and a small balance. Never commit the keypair file.
 
 ## API checker
 

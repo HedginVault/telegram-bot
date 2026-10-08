@@ -40,6 +40,8 @@ export const strategies: Strategy[] = [
     activePrice: "150",
     amountX: "500000000",
     amountY: "75000000",
+    pendingFeeX: "1000000",
+    pendingFeeY: "250000",
   },
   { type: "phoenix", address: "Strat3", equity: "12345678", leverage: null },
   { type: "unreadable", address: "Strat4444444444444444444444444444444444444", protocol: "dlmm", reason: "position account missing" },

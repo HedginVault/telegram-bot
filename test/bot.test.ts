@@ -1,8 +1,10 @@
 import { Telegram } from "telegraf";
 import type { Update } from "telegraf/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type HedgeApi } from "../src/api";
-import { createBot } from "../src/bot";
+import { ApiError, type BuiltStep, type HedgeApi } from "../src/api";
+import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
+import bs58 from "bs58";
+import { type Trading, createBot } from "../src/bot";
 import { SOL, USDC, VAULT, holdings, quote, strategies, vaultSummary } from "./fixtures";
 
 const ALLOWED_USER = 42;
@@ -41,7 +43,7 @@ interface SentPayload {
   reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
 }
 
-function setup(overrides: Partial<HedgeApi> = {}) {
+function setup(overrides: Partial<HedgeApi> = {}, trading?: Trading) {
   const api: HedgeApi = {
     listVaults: vi.fn(async () => [vaultSummary]),
     getHoldings: vi.fn(async () => holdings),
@@ -58,7 +60,9 @@ function setup(overrides: Partial<HedgeApi> = {}) {
     }),
     ...overrides,
   };
-  const bot = createBot({ token: "123:test", allowedUserIds: new Set([ALLOWED_USER]), api });
+  const background: Promise<void>[] = [];
+  const bot = createBot({ token: "123:test", allowedUserIds: new Set([ALLOWED_USER]), api, trading, runInBackground: (task) => background.push(task) });
+  const settle = () => Promise.all(background);
   bot.botInfo = { id: 1, is_bot: true, first_name: "Bot", username: "hv_test_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false };
   const replies: string[] = [];
   const parseModes: unknown[] = [];
@@ -88,7 +92,7 @@ function setup(overrides: Partial<HedgeApi> = {}) {
     if (!target) throw new Error(`no "${label}" button; have ${buttons().map((b) => b.text).join(", ")}`);
     await tap(target.callback_data);
   };
-  return { api, send, tap, click, buttons, lastScreen, calls, replies, parseModes };
+  return { api, send, tap, click, buttons, lastScreen, calls, replies, parseModes, settle };
 }
 
 describe("bot", () => {
@@ -237,5 +241,156 @@ describe("buttons", () => {
     await tap("h:../../etc");
     expect(api.listVaults).not.toHaveBeenCalled();
     expect(calls.map((c) => c.method)).toEqual(["answerCallbackQuery"]);
+  });
+});
+
+const PROGRAM_ID = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt";
+const manager = Keypair.generate();
+const trading: Trading = { manager, policy: { manager: manager.publicKey, programId: PROGRAM_ID } };
+
+function builtStep(): BuiltStep {
+  const blockhash = Keypair.generate().publicKey.toBase58();
+  const message = new TransactionMessage({
+    payerKey: manager.publicKey,
+    recentBlockhash: blockhash,
+    instructions: [new TransactionInstruction({ programId: new PublicKey(PROGRAM_ID), keys: [], data: Buffer.from([1]) })],
+  }).compileToV0Message();
+  return { transaction: Buffer.from(new VersionedTransaction(message).serialize()).toString("base64"), simulation: { unitsConsumed: 1 }, ticket: "t", blockhash };
+}
+
+/** An API that builds one manager-paid step per action and confirms it on the first poll. */
+function tradingApi(): Partial<HedgeApi> {
+  return {
+    build: vi.fn(async () => [builtStep()]),
+    send: vi.fn(async (transaction: string) => {
+      const signature = bs58.encode(VersionedTransaction.deserialize(Buffer.from(transaction, "base64")).signatures[0] ?? new Uint8Array());
+      return { signature, receipt: `r:${signature}`, status: "pending" as const };
+    }),
+    status: vi.fn(async () => ({ status: "confirmed" as const })),
+  };
+}
+
+describe("trading", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("shows no trade buttons without a manager keypair", async () => {
+    const { send, click, buttons, lastScreen } = setup();
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Quote a swap");
+    await click("Sell SOL");
+    await click("25%");
+    expect(buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "⬅️ Amount", "🏦 Vaults"]);
+    await click("🏦 Vaults");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    expect(lastScreen().text).toContain("Trading is off");
+    expect(buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "⬅️ Strategies"]);
+  });
+
+  it("swaps after a confirm screen with a fresh quote, then reports the confirmed transaction", async () => {
+    const { send, click, lastScreen, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Quote a swap");
+    await click("Sell SOL");
+    await click("25%");
+    await click("⚡ Swap SOL → USDC");
+    expect(lastScreen().text).toContain("⚠️ <b>Confirm</b> · Demo");
+    expect(lastScreen().text).toContain("<b>Swap 0.0025 SOL → USDC</b>");
+    expect(lastScreen().text).toContain("real Solana mainnet transaction");
+    expect(api.getQuote).toHaveBeenCalledTimes(2);
+    expect(api.build).not.toHaveBeenCalled();
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: SOL, destinationMint: USDC, amount: "2500000", slippageBps: 50 });
+    expect(lastScreen().text).toMatch(/^✅ <b>Swap 0.0025 SOL → USDC<\/b>/);
+    expect(lastScreen().text).toContain("<b>Done.</b> 1 transaction(s) confirmed.");
+    expect(lastScreen().text).toMatch(/✅ Confirmed <a href="https:\/\/solscan.io\/tx\//);
+  });
+
+  it("runs a confirmation only once even if tapped twice", async () => {
+    const { send, click, buttons, tap, replies, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Quote a swap");
+    await click("Sell SOL");
+    await click("25%");
+    await click("⚡ Swap SOL → USDC");
+    const confirm = buttons().find((b) => b.text === "✅ Confirm and send")?.callback_data ?? "";
+    await tap(confirm);
+    await settle();
+    await tap(confirm);
+    expect(api.build).toHaveBeenCalledTimes(1);
+    expect(replies.at(-1)).toBe("❌ This confirmation was already used or has expired. Start again from /start.");
+  });
+
+  it("refuses a second action while one is still running", async () => {
+    let release: () => void = () => {};
+    const api = tradingApi();
+    api.build = vi.fn(() => new Promise<BuiltStep[]>((resolve) => (release = () => resolve([builtStep()]))));
+    const { send, click, buttons, tap, calls, settle } = setup(api, trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    const claim = buttons().find((b) => b.text === "💰 Claim fees")?.callback_data ?? "";
+    const remove = buttons().find((b) => b.text === "➖ 50%")?.callback_data ?? "";
+    await tap(claim);
+    await click("✅ Confirm and send");
+    await tap(remove);
+    const removeConfirm = buttons().find((b) => b.text === "✅ Confirm and send")?.callback_data ?? "";
+    await tap(removeConfirm);
+    const alert = calls.filter((c) => c.method === "answerCallbackQuery").at(-1)?.payload as unknown as { text?: string };
+    expect(alert.text).toBe("Another transaction is still running. Wait for it to finish.");
+    release();
+    await settle();
+    expect(api.build).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["💰 Claim fees", "dlmm/claim-fee", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111" }],
+    ["➖ 50%", "dlmm/remove", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", bpsToRemove: 5000 }],
+    ["🔁 Zap out to USDC", "dlmm/zap-out", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", slippageBps: 100 }],
+  ])("builds %s on a DLMM position", async (label, action, body) => {
+    const { send, click, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click(label);
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith(action, body);
+  });
+
+  it("offers to close an empty swap strategy", async () => {
+    const { send, click, api, settle } = setup(
+      { ...tradingApi(), getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratJup", symbol: "BONK", decimals: 5, vaultBalance: "0" }]) },
+      trading,
+    );
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("🗑 Close empty BONK strategy");
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("strategy/close", { vault: VAULT, strategy: "StratJup" });
+  });
+
+  it("shows a refusal when the API builds a transaction for another payer", async () => {
+    const other: Trading = { manager: Keypair.generate(), policy: { manager: Keypair.generate().publicKey, programId: PROGRAM_ID } };
+    const { send, click, lastScreen, api, settle } = setup(tradingApi(), other);
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("💰 Claim fees");
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.send).not.toHaveBeenCalled();
+    expect(lastScreen().text).toMatch(/^🛑 /);
+    expect(lastScreen().text).toContain("is not the bot's manager key");
   });
 });

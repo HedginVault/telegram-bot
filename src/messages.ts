@@ -1,4 +1,6 @@
 import type { Holdings, Quote, Strategy, VaultSummary } from "./api";
+import type { PendingAction } from "./actions";
+import type { Outcome, Progress } from "./executor";
 import type { AmountPercent, QuotePair } from "./screens";
 import { formatBaseUnits } from "./format";
 
@@ -28,6 +30,8 @@ const usd = (value: number | null) =>
 const percent = (bps: number | null) => (bps === null ? "?" : `${(bps / 100).toFixed(2)}%`);
 const signedPercent = (bps: number | null) => (bps !== null && bps > 0 ? `+${percent(bps)}` : percent(bps));
 const address = (value: string) => `<code>${escapeHtml(value)}</code>`;
+const shortSig = (signature: string) => `${signature.slice(0, 6)}…${signature.slice(-4)}`;
+const txLink = (signature: string) => `<a href="https://solscan.io/tx/${encodeURIComponent(signature)}">${escapeHtml(shortSig(signature))}</a>`;
 const solscan = (value: string) => `<a href="https://solscan.io/account/${encodeURIComponent(value)}">Solscan</a>`;
 
 const STATUS_LABEL: Record<string, string> = {
@@ -186,6 +190,92 @@ export function quoteResultMessage(pair: QuotePair, percent: AmountPercent, quot
     "<i>A quote is not a promise. The trade can still fail or price differently.</i>",
   ].join("\n");
 }
+
+type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
+
+export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy, trading: boolean): string {
+  const { tokenX, tokenY } = strategy;
+  const lines = [
+    `⚙️ <b>${escapeHtml(tokenX.symbol)}/${escapeHtml(tokenY.symbol)} position</b> · ${escapeHtml(vault.name)}`,
+    address(strategy.position),
+    "",
+    `Range ${escapeHtml(strategy.lowerPrice)} to ${escapeHtml(strategy.upperPrice)} · now <b>${escapeHtml(strategy.activePrice)}</b>`,
+    `Holds ${amount(strategy.amountX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.amountY, tokenY.decimals, tokenY.symbol)}`,
+    `Unclaimed fees ${amount(strategy.pendingFeeX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.pendingFeeY, tokenY.decimals, tokenY.symbol)}`,
+  ];
+  if (!trading) lines.push("", "<i>Trading is off. Set MANAGER_KEYPAIR_PATH to manage this position.</i>");
+  return lines.join("\n");
+}
+
+export function actionTitle(action: PendingAction): string {
+  switch (action.kind) {
+    case "swap":
+      return `Swap ${amount(action.amountBaseUnits, action.input.decimals, action.input.symbol)} → ${escapeHtml(action.output.symbol)}`;
+    case "dlmmClaim":
+      return `Claim fees from the ${escapeHtml(action.pairLabel)} position`;
+    case "dlmmRemove":
+      return `Remove ${action.bps / 100}% of the ${escapeHtml(action.pairLabel)} position`;
+    case "dlmmZapOut":
+      return `Zap out the ${escapeHtml(action.pairLabel)} position to ${escapeHtml(action.depositSymbol)}`;
+    case "closeStrategy":
+      return `Close the empty ${escapeHtml(action.label)}`;
+  }
+}
+
+export function confirmMessage(vault: VaultSummary, action: PendingAction, quote?: Quote): string {
+  const lines = [`⚠️ <b>Confirm</b> · ${escapeHtml(vault.name)}`, "", `<b>${actionTitle(action)}</b>`];
+  if (action.kind === "swap" && quote) {
+    lines.push(
+      `You get <b>≈ ${amount(quote.outAmount, action.output.decimals, action.output.symbol)}</b> (fresh quote)`,
+      `Slippage limit ${action.slippageBps} bps · price impact ${escapeHtml(quote.priceImpactPct)}%`,
+    );
+  }
+  if (action.kind === "dlmmRemove" && action.bps === 10_000) lines.push("<i>Tokens return to the vault; the empty position stays open.</i>");
+  if (action.kind === "dlmmZapOut") lines.push("<i>Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.</i>");
+  lines.push("", "<blockquote>This signs and sends a real Solana mainnet transaction from the vault. It cannot be undone.</blockquote>");
+  return lines.join("\n");
+}
+
+function progressLine(progress: Progress): string {
+  switch (progress.kind) {
+    case "building":
+      return `🛠 Building <code>${escapeHtml(progress.action)}</code>`;
+    case "sent":
+      return `📤 Sent ${txLink(progress.signature)}${progress.status === "unknown" ? " <i>(outcome unknown, checking)</i>" : ""}`;
+    case "confirmed":
+      return `✅ Confirmed ${txLink(progress.signature)}`;
+  }
+}
+
+/** Live view while an action runs; `outcome` appears once it ends. */
+export function executionMessage(action: PendingAction, progress: Progress[], outcome?: Outcome): string {
+  const lines = [`${outcome ? outcomeIcon(outcome) : "⏳"} <b>${actionTitle(action)}</b>`, "", ...progress.map(progressLine)];
+  if (!outcome) return [...lines, "", "<i>Working… keep this chat open.</i>"].join("\n");
+  lines.push("");
+  switch (outcome.kind) {
+    case "confirmed":
+      lines.push(`<b>Done.</b> ${outcome.signatures.length} transaction(s) confirmed.`);
+      break;
+    case "refused":
+      lines.push("<b>Not signed.</b> The bot refused a transaction from the API:", `<i>${escapeHtml(outcome.reason)}</i>`);
+      break;
+    case "failed":
+      lines.push(`<b>Failed</b> (${escapeHtml(outcome.code)}): ${escapeHtml(outcome.message)}`);
+      if (outcome.signature) lines.push(`Transaction ${txLink(outcome.signature)}`);
+      if (outcome.signatures.length > 0) lines.push("<i>Earlier transactions in this action already landed. Check the position before retrying.</i>");
+      break;
+    case "unresolved":
+      lines.push(
+        "<b>Outcome unknown.</b> These may still land:",
+        ...outcome.pending.map((signature) => `• ${txLink(signature)}`),
+        "<i>Check Solscan before trying again. Do not resend blindly.</i>",
+      );
+      break;
+  }
+  return lines.join("\n");
+}
+
+const outcomeIcon = (outcome: Outcome) => ({ confirmed: "✅", refused: "🛑", failed: "❌", unresolved: "❓" })[outcome.kind];
 
 export function errorMessage(title: string, detail?: string): string {
   return detail ? `❌ <b>${escapeHtml(title)}</b>\n${escapeHtml(detail)}` : `❌ ${escapeHtml(title)}`;

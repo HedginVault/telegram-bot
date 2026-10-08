@@ -53,6 +53,8 @@ export const StrategySchema = z.discriminatedUnion("type", [
     activePrice: z.string(),
     amountX: BaseUnits,
     amountY: BaseUnits,
+    pendingFeeX: BaseUnits,
+    pendingFeeY: BaseUnits,
   }),
   z.object({ type: z.literal("phoenix"), address: z.string(), equity: BaseUnits, leverage: z.number().nullable() }),
   z.object({ type: z.literal("unreadable"), address: z.string(), protocol: z.string(), reason: z.string() }),
