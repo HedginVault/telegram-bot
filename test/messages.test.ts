@@ -104,13 +104,22 @@ describe("messages", () => {
       [
         "📊 <b>Demo</b> · holdings",
         "",
-        "Live value <b>2.5 USDC</b> ($2.50)",
-        "Last NAV 2.4 USDC · <i>live vs NAV +4.17%</i>",
+        "<b>Value</b>",
+        "├ Live <b>2.5 USDC</b>",
+        "├ In USD $2.50",
+        "├ Last NAV 2.4 USDC",
+        "└ Live vs NAV 🟢 +4.17%",
         "<blockquote>⚠️ Partial view: no price for MYSTERY. Missing value is not zero.</blockquote>",
         "",
-        "<b>Tokens</b>",
-        "• <b>USDC</b> 1 · $1.00 · 40.00%",
-        "• <b>SOL</b> 0.01 · $1.50 · 60.00%",
+        "<b>Tokens</b> (2)",
+        "",
+        "<b>USDC</b> <code>████░░░░░░</code> 40.00%",
+        "├ Amount 1",
+        "└ Value $1.00",
+        "",
+        "<b>SOL</b> <code>██████░░░░</code> 60.00%",
+        "├ Amount 0.01",
+        "└ Value $1.50",
       ].join("\n"),
     );
   });
@@ -208,21 +217,26 @@ describe("messages", () => {
       [
         "⚙️ <b>Demo</b> · settings",
         "",
-        "Status 🟢 normal",
-        "Deposits ▶️ open · withdrawals ⏸ paused",
+        "<b>Status</b>",
+        "├ Vault 🟢 normal",
+        "├ Deposits ▶️ open",
+        "└ Withdrawals ⏸ paused",
         "",
         "<b>Fees</b>",
-        "Performance 10% · management 2% a year",
+        "├ Performance 10%",
+        "└ Management 2% a year",
         "<i>Changing to 15% and 2% on 2026-09-22 18:00 UTC.</i>",
         "",
         "<b>Limits</b>",
-        "Deposit cap 1,000 USDC",
-        "Min deposit 10 USDC · min withdrawal 1 shares",
+        "├ Deposit cap 1,000 USDC",
+        "├ Min deposit 10 USDC",
+        "└ Min withdrawal 1 shares",
         "",
         "<b>Pending</b>",
-        "Deposits 5 USDC · withdrawals 2 shares",
-        "Unclaimed manager fee 0.5 shares",
-        "Open strategies 3",
+        "├ Deposits 5 USDC",
+        "├ Withdrawals 2 shares",
+        "├ Unclaimed manager fee 0.5 shares",
+        "└ Open strategies 3",
       ].join("\n"),
     );
   });
@@ -232,17 +246,25 @@ describe("messages", () => {
       [
         "📈 <b>Demo</b> · Phoenix perps",
         "",
-        "Trader <code>Trader1111111111111111111111111111111111111</code>",
-        "Equity <b>5.25 USDC</b> · collateral 5 USDC",
-        "Margin used 1 USDC · maintenance 0.5 USDC · risk healthy",
-        "Withdrawable 4 USDC",
+        "Trader",
+        "<code>Trader1111111111111111111111111111111111111</code>",
+        "",
+        "<b>Account</b>",
+        "├ Equity <b>5.25 USDC</b>",
+        "├ Collateral 5 USDC",
+        "├ Withdrawable 4 USDC",
+        "└ Risk 🟢 healthy",
+        "",
+        "<b>Margin</b> <code>██░░░░░░░░</code> 19.04% of equity",
+        "├ Used 1 USDC",
+        "└ Maintenance 0.5 USDC",
         "",
         "<b>Positions</b> (1)",
         "• SOL · liquidation at $98.5",
         "",
         "<b>Open orders</b> (2)",
-        "• SOL long 0.5 at $140",
-        "• SOL short 0.25 at $170 · reduce-only",
+        "🟢 <b>SOL long</b> 0.5 at $140",
+        "🔴 <b>SOL short</b> 0.25 at $170 · reduce-only",
       ].join("\n"),
     );
     expect(phoenixMessage(vaultSummary, phoenixNone)).toBe(
@@ -250,17 +272,32 @@ describe("messages", () => {
     );
   });
 
-  it("lists NAVs newest first and flags admin overrides", () => {
+  it("lists NAVs newest first with per-epoch change, a trend line, and admin overrides", () => {
     expect(navHistoryMessage(vaultSummary, navHistory)).toBe(
       [
-        "📊 <b>Demo</b> · NAV history (latest 2, newest first)",
+        "📊 <b>Demo</b> · NAV history",
+        "<i>Latest 2 epochs, newest first</i>",
         "",
-        "• Epoch 124 · 2026-09-21 20:00 UTC",
-        "  <b>1.5 USDC</b> · per share 1.02 · ⚠️ admin override",
-        "• Epoch 123 · 2026-09-21 16:00 UTC",
-        "  <b>1.4 USDC</b> · per share 1",
+        "<b>NAV per share</b>, oldest → newest",
+        "<code>▁█</code>",
+        "├ Now <b>1.02</b>",
+        "└ Over 2 epochs 🟢 +2.0000%",
+        "",
+        "<b>Epoch 124</b> · 2026-09-21 20:00 UTC",
+        "├ Assets <b>1.5 USDC</b>",
+        "├ Per share 1.02 · 🟢 +2.0000%",
+        "└ ⚠️ Admin override",
+        "",
+        "<b>Epoch 123</b> · 2026-09-21 16:00 UTC",
+        "├ Assets <b>1.4 USDC</b>",
+        "└ Per share 1",
       ].join("\n"),
     );
+    const [oldest] = navHistory;
+    if (!oldest) throw new Error("fixture missing");
+    const dip = { ...oldest, epoch: 125, ts: null, navPerShare: "1019999999", overridden: false };
+    expect(navHistoryMessage(vaultSummary, [dip]).split("\n").slice(-3)).toEqual(["<b>Epoch 125</b>", "├ Assets <b>1.4 USDC</b>", "└ Per share 1.019999999"]);
+    expect(navHistoryMessage(vaultSummary, [...navHistory, dip]).split("\n")).toContain("└ Per share 1.019999999 · 🔴 -0.0000%");
     expect(navHistoryMessage(vaultSummary, [])).toBe("📊 <b>Demo</b> · NAV history\n\nNo NAV posted yet.");
   });
 
@@ -280,17 +317,30 @@ describe("messages", () => {
     );
   });
 
-  it("shows realized PnL of closed strategies with signs", () => {
+  it("shows realized PnL of closed strategies with signs, hold time, fees, and combined totals", () => {
     expect(strategyHistoryMessage(vaultSummary, strategyHistory)).toBe(
       [
-        "🗂 <b>Demo</b> · closed strategies (latest 1, newest first)",
+        "🗂 <b>Demo</b> · closed strategies",
+        "<i>Latest 1, newest first</i>",
         "",
-        `<b>Meteora DLMM</b> · closed 2026-09-21 20:00 UTC · <a href="https://solscan.io/tx/${strategyHistory[0]?.closeSignature}">5igCLo…1111</a>`,
-        "• Realized loss <b>-0.5 USDC</b>",
-        "• Realized PnL <b>+0.01 SOL</b>",
+        "<b>Realized PnL</b>, all 1 combined",
+        "├ 🔴 USDC <b>-0.5</b>",
+        "└ 🟢 SOL <b>+0.01</b>",
+        "",
+        "<b>Meteora DLMM</b> · USDC/SOL",
+        "🕓 Closed 2026-09-21 20:00 UTC",
+        `⏱ Held 5h 46m · 🔗 <a href="https://solscan.io/tx/${strategyHistory[0]?.closeSignature}">5igCLo…1111</a>`,
+        "├ 🔴 USDC <b>-0.5</b>",
+        "└ 🟢 SOL <b>+0.01</b>",
         "<i>Opened before exact accounting; totals may be incomplete.</i>",
       ].join("\n"),
     );
+    const [closed] = strategyHistory;
+    if (!closed) throw new Error("fixture missing");
+    const earning = { ...closed, exact: true, tokens: closed.tokens.map((token) => ({ ...token, feesRetained: "200000", realizedPnl: "200000" })) };
+    const lines = strategyHistoryMessage(vaultSummary, [earning, earning]).split("\n");
+    expect(lines.slice(3, 6)).toEqual(["<b>Realized PnL</b>, all 2 combined", "├ 🟢 USDC <b>+0.4</b>", "└ 🟢 SOL <b>+0.0004</b>"]);
+    expect(lines).toContain("├ 🟢 USDC <b>+0.2</b> · fees +0.2");
   });
 
   it("explains new API error codes in plain words", () => {

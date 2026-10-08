@@ -756,9 +756,9 @@ describe("vault reads", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it.each([
-    ["/nav 1", "📊 <b>Demo</b> · NAV history (latest 2, newest first)"],
+    ["/nav 1", "📊 <b>Demo</b> · NAV history"],
     ["/requests 1", "📋 <b>Demo</b> · queued requests"],
-    ["/history 1", "🗂 <b>Demo</b> · closed strategies (latest 1, newest first)"],
+    ["/history 1", "🗂 <b>Demo</b> · closed strategies"],
     ["/phoenix 1", "📈 <b>Demo</b> · Phoenix perps"],
     ["/settings 1", "⚙️ <b>Demo</b> · settings"],
   ])("answers %s", async (command, title) => {

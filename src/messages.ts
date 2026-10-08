@@ -74,6 +74,41 @@ const cap = (baseUnits: string, token: TokenRef) => (baseUnits === NO_DEPOSIT_CA
 /** Unix seconds → "2026-10-08 12:00 UTC", the same on every machine. */
 const utc = (seconds: number) => `${new Date(seconds * 1000).toISOString().slice(0, 16).replace("T", " ")} UTC`;
 
+/** Prefixes rows with tree branches so related facts stack vertically under a heading. */
+const tree = (rows: string[]) => rows.map((row, index) => `${index === rows.length - 1 ? "└" : "├"} ${row}`);
+const BAR_CELLS = 10;
+/** A 10-cell share bar in monospace so bars line up; null shares get no bar. */
+const bar = (bps: number | null) => {
+  if (bps === null) return "";
+  const filled = Math.min(BAR_CELLS, Math.max(0, Math.round((bps * BAR_CELLS) / 10_000)));
+  return `<code>${"█".repeat(filled)}${"░".repeat(BAR_CELLS - filled)}</code>`;
+};
+const SPARK = "▁▂▃▄▅▆▇█";
+/** One block per value, scaled between the smallest and largest, oldest first. */
+const sparkline = (values: bigint[]) => {
+  const min = values.reduce((low, value) => (value < low ? value : low));
+  const max = values.reduce((high, value) => (value > high ? value : high));
+  const span = max - min;
+  return values.map((value) => SPARK[span === 0n ? 3 : Number(((value - min) * 7n) / span)]).join("");
+};
+const signIcon = (sign: bigint | number) => (sign > 0 ? "🟢" : sign < 0 ? "🔴" : "⚪");
+/** Percent change with 4 decimals, computed in bigint parts per million of `from`. */
+const changePercent = (fromBaseUnits: string, toBaseUnits: string) => {
+  const from = BigInt(fromBaseUnits);
+  if (from === 0n) return null;
+  const diff = BigInt(toBaseUnits) - from;
+  const abs = ((diff < 0n ? -diff : diff) * 1_000_000n) / from;
+  // The sign comes from the raw difference so a drop under 0.0001% still reads as a drop.
+  return { sign: diff, text: `${diff < 0n ? "-" : diff > 0n ? "+" : ""}${abs / 10_000n}.${(abs % 10_000n).toString().padStart(4, "0")}%` };
+};
+/** Seconds → "3d 4h", "4h 6m", or "12m". */
+const duration = (seconds: number) => {
+  const days = Math.floor(seconds / 86_400);
+  const hours = Math.floor((seconds % 86_400) / 3_600);
+  const minutes = Math.floor((seconds % 3_600) / 60);
+  return days > 0 ? `${days}d ${hours}h` : hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+};
+
 const STATUS_LABEL: Record<string, string> = {
   normal: "🟢 normal",
   reduceOnly: "🟡 reduce only",
@@ -131,20 +166,28 @@ export function vaultMessage(vault: VaultSummary): string {
 
 export function holdingsMessage(vault: VaultSummary, holdings: Holdings): string {
   const deposit = holdings.depositToken;
+  const delta = holdings.navDeltaBps;
   const lines = [
     `📊 <b>${escapeHtml(vault.name)}</b> · holdings`,
     "",
-    `Live value <b>${amount(holdings.totalValue, deposit.decimals, deposit.symbol)}</b> (${usd(holdings.totalUsd)})`,
-    `Last NAV ${amount(holdings.navTotalAssets, deposit.decimals, deposit.symbol)} · <i>live vs NAV ${signedPercent(holdings.navDeltaBps)}</i>`,
+    "<b>Value</b>",
+    ...tree([
+      `Live <b>${amount(holdings.totalValue, deposit.decimals, deposit.symbol)}</b>`,
+      `In USD ${usd(holdings.totalUsd)}`,
+      `Last NAV ${amount(holdings.navTotalAssets, deposit.decimals, deposit.symbol)}`,
+      `Live vs NAV ${delta === null ? "" : `${signIcon(delta)} `}${signedPercent(delta)}`,
+    ]),
   ];
   if (holdings.partial) {
     const unpriced = holdings.unpriced.map(escapeHtml).join(", ") || "some tokens";
     lines.push(`<blockquote>⚠️ Partial view: no price for ${unpriced}. Missing value is not zero.</blockquote>`);
   }
-  lines.push("", "<b>Tokens</b>");
+  lines.push("", `<b>Tokens</b> (${holdings.tokens.length})`);
   for (const exposure of holdings.tokens) {
     lines.push(
-      `• <b>${escapeHtml(exposure.token.symbol)}</b> ${formatBaseUnits(exposure.amount, exposure.token.decimals)} · ${usd(exposure.usd)} · ${percent(exposure.shareBps)}`,
+      "",
+      [`<b>${escapeHtml(exposure.token.symbol)}</b>`, bar(exposure.shareBps), percent(exposure.shareBps)].filter(Boolean).join(" "),
+      ...tree([`Amount ${formatBaseUnits(exposure.amount, exposure.token.decimals)}`, `Value ${usd(exposure.usd)}`]),
     );
   }
   return lines.join("\n");
@@ -200,11 +243,30 @@ export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy): st
 export function navHistoryMessage(vault: VaultSummary, points: NavHistoryPoint[]): string {
   const title = `📊 <b>${escapeHtml(vault.name)}</b> · NAV history`;
   if (points.length === 0) return `${title}\n\nNo NAV posted yet.`;
-  const lines = [...points].reverse().map(
-    (point) =>
-      `• Epoch ${point.epoch}${point.ts === null ? "" : ` · ${utc(point.ts)}`}\n  <b>${amount(point.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b> · per share ${formatBaseUnits(point.navPerShare, 9)}${point.overridden ? " · ⚠️ admin override" : ""}`,
-  );
-  return [`${title} (latest ${points.length}, newest first)`, "", ...lines].join("\n");
+  // `points` arrive oldest first; each epoch is compared with the one before it.
+  const blocks = points.map((point, index) => {
+    const previous = points[index - 1];
+    const change = previous && changePercent(previous.navPerShare, point.navPerShare);
+    const rows = [
+      `Assets <b>${amount(point.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b>`,
+      `Per share ${formatBaseUnits(point.navPerShare, 9)}${change ? ` · ${signIcon(change.sign)} ${change.text}` : ""}`,
+    ];
+    if (point.overridden) rows.push("⚠️ Admin override");
+    return [`<b>Epoch ${point.epoch}</b>${point.ts === null ? "" : ` · ${utc(point.ts)}`}`, ...tree(rows)].join("\n");
+  });
+  const first = points[0];
+  const last = points[points.length - 1];
+  const lines = [title, `<i>Latest ${points.length} epochs, newest first</i>`];
+  if (first && last && points.length > 1) {
+    const total = changePercent(first.navPerShare, last.navPerShare);
+    lines.push(
+      "",
+      "<b>NAV per share</b>, oldest → newest",
+      `<code>${sparkline(points.map((point) => BigInt(point.navPerShare)))}</code>`,
+      ...tree([`Now <b>${formatBaseUnits(last.navPerShare, 9)}</b>`, `Over ${points.length} epochs ${total ? `${signIcon(total.sign)} ${total.text}` : "n/a"}`]),
+    );
+  }
+  return [...lines, "", blocks.reverse().join("\n\n")].join("\n");
 }
 
 const requestState = (state: "pending" | "resolvable") => (state === "resolvable" ? "ready to settle" : "waiting for the next NAV");
@@ -227,23 +289,50 @@ export function requestsMessage(vault: VaultSummary, queue: RequestQueue): strin
 const STRATEGY_TYPE_LABEL = { jupiter: "Swap", dlmm: "Meteora DLMM", phoenix: "Phoenix perps" } as const;
 export const STRATEGY_HISTORY_LIMIT = 10;
 
+type ClosedToken = StrategyHistoryItem["tokens"][number];
+
+/** "🔴 USDC -0.5" with the sign spelled out, or raw base units when decimals are unknown. */
+function realizedPnl(token: Pick<ClosedToken, "mint" | "symbol" | "decimals" | "realizedPnl">): string {
+  const symbol = escapeHtml(token.symbol ?? shortAddress(token.mint));
+  const sign = BigInt(token.realizedPnl);
+  if (token.decimals === null) return `${signIcon(sign)} ${escapeHtml(token.realizedPnl)} base units of ${address(token.mint)}`;
+  const value = signedAmount(token.realizedPnl, token.decimals, "").trimEnd();
+  return `${signIcon(sign)} ${symbol} <b>${sign > 0n ? "+" : ""}${value}</b>`;
+}
+
 export function strategyHistoryMessage(vault: VaultSummary, items: StrategyHistoryItem[]): string {
   const title = `🗂 <b>${escapeHtml(vault.name)}</b> · closed strategies`;
   if (items.length === 0) return `${title}\n\nNo closed strategies yet.`;
-  const blocks = items.slice(0, STRATEGY_HISTORY_LIMIT).map((item) => {
-    const lines = [`<b>${item.type ? STRATEGY_TYPE_LABEL[item.type] : "Strategy"}</b> · closed ${utc(item.closedTs)} · ${txLink(item.closeSignature)}`];
-    for (const token of item.tokens) {
-      const pnl =
-        token.decimals === null
-          ? `${escapeHtml(token.realizedPnl)} base units of ${address(token.mint)}`
-          : signedAmount(token.realizedPnl, token.decimals, token.symbol ?? shortAddress(token.mint));
-      const loss = token.realizedPnl.startsWith("-");
-      lines.push(`• Realized ${loss ? "loss" : "PnL"} <b>${loss || token.realizedPnl === "0" ? "" : "+"}${pnl}</b>`);
-    }
+  const shown = items.slice(0, STRATEGY_HISTORY_LIMIT);
+  const totals = new Map<string, ClosedToken>();
+  for (const token of shown.flatMap((item) => item.tokens)) {
+    const sum = totals.get(token.mint);
+    const realized = (BigInt(sum?.realizedPnl ?? "0") + BigInt(token.realizedPnl)).toString();
+    totals.set(token.mint, { ...token, realizedPnl: realized });
+  }
+  const blocks = shown.map((item) => {
+    const pair = item.type === "dlmm" && item.tokens.length > 0 ? ` · ${item.tokens.map((t) => escapeHtml(t.symbol ?? shortAddress(t.mint))).join("/")}` : "";
+    const held = item.openedTs === null ? "" : `⏱ Held ${duration(item.closedTs - item.openedTs)} · `;
+    const rows = item.tokens.map((token) => {
+      const fees = token.decimals !== null && token.feesRetained !== "0" ? ` · fees +${amount(token.feesRetained, token.decimals, "").trimEnd()}` : "";
+      return `${realizedPnl(token)}${fees}`;
+    });
+    const lines = [
+      `<b>${item.type ? STRATEGY_TYPE_LABEL[item.type] : "Strategy"}</b>${pair}`,
+      `🕓 Closed ${utc(item.closedTs)}`,
+      `${held}🔗 ${txLink(item.closeSignature)}`,
+      ...tree(rows.length > 0 ? rows : ["<i>No token flows recorded.</i>"]),
+    ];
     if (!item.exact) lines.push("<i>Opened before exact accounting; totals may be incomplete.</i>");
     return lines.join("\n");
   });
-  return [`${title} (latest ${blocks.length}, newest first)`, ...blocks].join("\n\n");
+  return [
+    title,
+    `<i>Latest ${blocks.length}, newest first</i>`,
+    "",
+    ...(totals.size === 0 ? [] : [`<b>Realized PnL</b>, all ${blocks.length} combined`, ...tree([...totals.values()].map(realizedPnl)), ""]),
+    blocks.join("\n\n"),
+  ].join("\n");
 }
 
 const pauseLabel = (paused: boolean) => (paused ? "⏸ paused" : "▶️ open");
@@ -253,11 +342,16 @@ export function settingsMessage(vault: VaultDetail): string {
   const lines = [
     `⚙️ <b>${escapeHtml(vault.name)}</b> · settings`,
     "",
-    `Status ${status(vault.status)}${vault.protocol.status === "normal" ? "" : ` · protocol ${status(vault.protocol.status)}`}`,
-    `Deposits ${pauseLabel(vault.depositPaused)} · withdrawals ${pauseLabel(vault.withdrawalPaused)}`,
+    "<b>Status</b>",
+    ...tree([
+      `Vault ${status(vault.status)}`,
+      ...(vault.protocol.status === "normal" ? [] : [`Protocol ${status(vault.protocol.status)}`]),
+      `Deposits ${pauseLabel(vault.depositPaused)}`,
+      `Withdrawals ${pauseLabel(vault.withdrawalPaused)}`,
+    ]),
     "",
     "<b>Fees</b>",
-    `Performance ${feePercent(vault.performanceFeeBps)} · management ${feePercent(vault.managementFeeBps)} a year`,
+    ...tree([`Performance ${feePercent(vault.performanceFeeBps)}`, `Management ${feePercent(vault.managementFeeBps)} a year`]),
   ];
   if (vault.pendingPerformanceFeeBps !== vault.performanceFeeBps || vault.pendingManagementFeeBps !== vault.managementFeeBps) {
     lines.push(`<i>Changing to ${feePercent(vault.pendingPerformanceFeeBps)} and ${feePercent(vault.pendingManagementFeeBps)} on ${utc(vault.feeEffectiveTs)}.</i>`);
@@ -265,13 +359,19 @@ export function settingsMessage(vault: VaultDetail): string {
   lines.push(
     "",
     "<b>Limits</b>",
-    `Deposit cap ${cap(vault.depositCap, token)}`,
-    `Min deposit ${amount(vault.minDeposit, token.decimals, token.symbol)} · min withdrawal ${shares(vault.minWithdrawalShares, token.decimals)}`,
+    ...tree([
+      `Deposit cap ${cap(vault.depositCap, token)}`,
+      `Min deposit ${amount(vault.minDeposit, token.decimals, token.symbol)}`,
+      `Min withdrawal ${shares(vault.minWithdrawalShares, token.decimals)}`,
+    ]),
     "",
     "<b>Pending</b>",
-    `Deposits ${amount(vault.pendingDeposits, token.decimals, token.symbol)} · withdrawals ${shares(vault.pendingWithdrawalShares, token.decimals)}`,
-    `Unclaimed manager fee ${shares(vault.unclaimedManagerFeeShares, token.decimals)}`,
-    `Open strategies ${vault.openStrategyCount}`,
+    ...tree([
+      `Deposits ${amount(vault.pendingDeposits, token.decimals, token.symbol)}`,
+      `Withdrawals ${shares(vault.pendingWithdrawalShares, token.decimals)}`,
+      `Unclaimed manager fee ${shares(vault.unclaimedManagerFeeShares, token.decimals)}`,
+      `Open strategies ${vault.openStrategyCount}`,
+    ]),
   );
   return lines.join("\n");
 }
@@ -286,17 +386,28 @@ export function phoenixMessage(vault: VaultSummary, phoenix: PhoenixManager): st
     lines.push("No Phoenix strategy yet.", "<i>Step 1 of 2: set up the strategy. Step 2 registers the vault's trader with Phoenix.</i>");
     return lines.join("\n");
   }
-  lines.push(`Trader ${address(phoenix.traderAccount)}`);
+  lines.push("Trader", address(phoenix.traderAccount));
   if (phoenix.status === "registered") {
     lines.push("", "<i>Step 2 of 2: onboard the trader with Phoenix. Then you can deposit USDC and trade.</i>");
     return lines.join("\n");
   }
   const { account } = phoenix;
   if (account) {
+    const equity = BigInt(account.equity);
+    // Bar math only; displayed amounts stay base-unit strings.
+    const usedBps = equity > 0n ? Number((BigInt(account.initialMargin) * 10_000n) / equity) : null;
     lines.push(
-      `Equity <b>${usdcAmount(account.equity)}</b> · collateral ${usdcAmount(account.collateral)}`,
-      `Margin used ${usdcAmount(account.initialMargin)} · maintenance ${usdcAmount(account.maintenanceMargin)} · risk ${escapeHtml(account.riskState)}`,
-      `Withdrawable ${usdcAmount(account.withdrawable)}`,
+      "",
+      "<b>Account</b>",
+      ...tree([
+        `Equity <b>${usdcAmount(account.equity)}</b>`,
+        `Collateral ${usdcAmount(account.collateral)}`,
+        `Withdrawable ${usdcAmount(account.withdrawable)}`,
+        `Risk ${account.riskState === "healthy" ? "🟢" : "⚠️"} ${escapeHtml(account.riskState)}`,
+      ]),
+      "",
+      `<b>Margin</b> ${[bar(usedBps), usedBps === null ? "" : `${percent(usedBps)} of equity`].filter(Boolean).join(" ")}`,
+      ...tree([`Used ${usdcAmount(account.initialMargin)}`, `Maintenance ${usdcAmount(account.maintenanceMargin)}`]),
     );
     const positions = Object.entries(account.liquidationPrices);
     lines.push("", `<b>Positions</b> (${positions.length})`);
@@ -312,7 +423,7 @@ export function phoenixMessage(vault: VaultSummary, phoenix: PhoenixManager): st
     if (phoenix.openOrders.length === 0) lines.push("<i>None.</i>");
     for (const order of phoenix.openOrders) {
       lines.push(
-        `• ${escapeHtml(order.symbol)} ${order.side} ${escapeHtml(order.size)} at $${escapeHtml(order.price)}${order.reduceOnly ? " · reduce-only" : ""}`,
+        `${order.side === "long" ? "🟢" : "🔴"} <b>${escapeHtml(order.symbol)} ${order.side}</b> ${escapeHtml(order.size)} at $${escapeHtml(order.price)}${order.reduceOnly ? " · reduce-only" : ""}`,
       );
     }
   }
