@@ -7,3 +7,4 @@ dist
 # Keypair files: never commit
 keys/
 *.keypair.json
+data/

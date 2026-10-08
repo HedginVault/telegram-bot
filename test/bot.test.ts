@@ -7,12 +7,13 @@ import {
   DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
   type HedgeClient,
   executeBuild,
-  keypairSigner,
   toBuildRequest,
 } from "@hedginvault/sdk";
 import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
-import { type Trading, createBot } from "../src/bot";
+import { randomBytes } from "node:crypto";
+import { createBot } from "../src/bot";
+import { createWalletStore } from "../src/wallets";
 import { POOL, SOL, USDC, VAULT, holdings, pool, poolSearch, quote, strategies, vaultSummary } from "./fixtures";
 
 const ALLOWED_USER = 42;
@@ -47,12 +48,18 @@ function callbackUpdate(fromId: number, data: string): Update {
 }
 
 interface SentPayload {
+  protect_content?: boolean;
   text: string;
   parse_mode?: string;
   reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
 }
 
-function setup(overrides: Partial<HedgeClient> = {}, trading?: Trading) {
+/** The active wallet of ALLOWED_USER; trading tests build transactions it pays for. */
+const manager = Keypair.generate();
+const API_KEY = `hv1_test_${"a".repeat(64)}`;
+
+/** `wallet: null` starts the user with no wallet at all. */
+function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = manager) {
   const api: HedgeClient = {
     listVaults: vi.fn(async () => [vaultSummary]),
     getHoldings: vi.fn(async () => holdings),
@@ -82,7 +89,23 @@ function setup(overrides: Partial<HedgeClient> = {}, trading?: Trading) {
     ...overrides,
   };
   const background: Promise<void>[] = [];
-  const bot = createBot({ token: "123:test", allowedUserIds: new Set([ALLOWED_USER]), api, trading, runInBackground: (task) => background.push(task) });
+  const wallets = createWalletStore(undefined, randomBytes(32));
+  const listedWith: string[] = [];
+  if (wallet) wallets.setApiKey(ALLOWED_USER, wallets.add(ALLOWED_USER, wallet, "imported").wallet.id, API_KEY);
+  const bot = createBot({
+    token: "123:test",
+    allowedUserIds: new Set([ALLOWED_USER]),
+    wallets,
+    // Records which wallet API key each vault list was read with.
+    clientFor: (apiKey) => ({
+      ...api,
+      listVaults: () => {
+        listedWith.push(apiKey);
+        return api.listVaults();
+      },
+    }),
+    runInBackground: (task) => background.push(task),
+  });
   const settle = () => Promise.all(background);
   bot.botInfo = { id: 1, is_bot: true, first_name: "Bot", username: "hv_test_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false };
   const replies: string[] = [];
@@ -128,7 +151,7 @@ function setup(overrides: Partial<HedgeClient> = {}, trading?: Trading) {
     await click(label);
     await type(text);
   };
-  return { api, send, tap, type, click, fill, buttons, lastScreen, calls, replies, parseModes, settle, alerts };
+  return { api, bot, wallets, listedWith, send, tap, type, click, fill, buttons, lastScreen, calls, replies, parseModes, settle, alerts };
 }
 
 describe("bot", () => {
@@ -165,7 +188,7 @@ describe("bot", () => {
     const { api, send, replies } = setup();
     await send("/holdings 9");
     await send("/holdings");
-    expect(replies).toEqual(['❌ No vault "9" for this API key. Send /vaults to see the list.', "❌ Usage: /holdings &lt;vault&gt;"]);
+    expect(replies).toEqual(['❌ No vault "9" for your active wallet. Send /vaults to see the list.', "❌ Usage: /holdings &lt;vault&gt;"]);
     expect(api.getHoldings).not.toHaveBeenCalled();
   });
 
@@ -188,14 +211,14 @@ describe("buttons", () => {
     const { send, buttons, lastScreen } = setup();
     await send("/start");
     expect(lastScreen().text).toMatch(/^🏦 <b>Your vaults<\/b> \(1\)/);
-    expect(buttons().map((b) => b.text)).toEqual(["1. Demo", "🔄 Refresh"]);
+    expect(buttons().map((b) => b.text)).toEqual(["1. Demo", "🔄 Refresh", "👛 Wallet"]);
   });
 
   it("walks vault → holdings → back by tapping, editing one message", async () => {
     const { send, click, buttons, lastScreen, calls } = setup();
     await send("/start");
     await click("1. Demo");
-    expect(buttons().map((b) => b.text)).toEqual(["📊 Holdings", "🧩 Strategies", "💱 Quote a swap", "🏦 Vaults"]);
+    expect(buttons().map((b) => b.text)).toEqual(["📊 Holdings", "🧩 Strategies", "💱 Swap", "➕ New LP position", "🏦 Vaults"]);
     await click("📊 Holdings");
     expect(lastScreen().text).toMatch(/^📊 <b>Demo<\/b> · holdings/);
     await click("⬅️ Back");
@@ -222,11 +245,11 @@ describe("buttons", () => {
 describe("swap form", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("quotes a held token with a typed amount and custom slippage, read-only", async () => {
+  it("quotes a held token with a typed amount and custom slippage", async () => {
     const { send, click, fill, buttons, lastScreen, api } = setup();
     await send("/start");
     await click("1. Demo");
-    await click("💱 Quote a swap");
+    await click("💱 Swap");
     expect(lastScreen().text).toContain("💱 <b>Swap</b> · buy with USDC");
     await click("🟢 Buying · tap to sell");
     await click("SOL");
@@ -234,15 +257,15 @@ describe("swap form", () => {
     await fill("✏️ Slippage", "0.8");
     expect(lastScreen().text).toContain("Amount 0.004 SOL");
     expect(lastScreen().text).toContain("Slippage 0.8%");
-    await click("📈 Get quote");
+    await click("📈 Quote & review");
     expect(api.getQuote).toHaveBeenLastCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amount: "4000000", slippageBps: 80 });
     expect(lastScreen().text).toMatch(/^💱 <b>SOL → USDC<\/b>/);
-    expect(buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "✏️ Edit"]);
+    expect(buttons().map((b) => b.text)).toEqual(["⚡ Swap SOL → USDC", "🔄 Refresh", "✏️ Edit"]);
   });
 
   it("swaps a pasted contract address after warning that it is unverified", async () => {
     const MINT = "PastedMint111111111111111111111111111111111";
-    const { send, click, fill, lastScreen, api, settle } = setup(tradingApi(), trading);
+    const { send, click, fill, lastScreen, api, settle } = setup(tradingApi());
     await send("/start");
     await click("1. Demo");
     await click("💱 Swap");
@@ -267,7 +290,7 @@ describe("swap form", () => {
     const { send, click, type, replies, lastScreen } = setup();
     await send("/start");
     await click("1. Demo");
-    await click("💱 Quote a swap");
+    await click("💱 Swap");
     await click("📋 Paste CA");
     await type("not a mint");
     expect(replies.at(-1)).toBe("That is not a Solana address. Paste the token's mint address.\nTry again, or send /cancel.");
@@ -283,10 +306,10 @@ describe("swap form", () => {
     const { send, click, fill, alerts, api } = setup();
     await send("/start");
     await click("1. Demo");
-    await click("💱 Quote a swap");
+    await click("💱 Swap");
     await click("SOL");
     await fill("✏️ Amount", "5");
-    await click("📈 Get quote");
+    await click("📈 Quote & review");
     expect(alerts()).toContain("That is more than the vault holds.");
     expect(api.getQuote).not.toHaveBeenCalled();
   });
@@ -298,8 +321,6 @@ describe("swap form", () => {
   });
 });
 
-const manager = Keypair.generate();
-const trading: Trading = { signer: keypairSigner(manager) };
 
 function builtStep(): BuiltStep {
   const blockhash = Keypair.generate().publicKey.toBase58();
@@ -336,19 +357,8 @@ async function openSwapQuote(ui: ReturnType<typeof setup>) {
 describe("trading", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("shows no trade or LP buttons without a manager keypair", async () => {
-    const { send, click, buttons, lastScreen } = setup();
-    await send("/start");
-    await click("1. Demo");
-    expect(buttons().map((b) => b.text)).not.toContain("➕ New LP position");
-    await click("🧩 Strategies");
-    await click("⚙️ SOL/USDC position");
-    expect(lastScreen().text).toContain("Trading is off");
-    expect(buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "⬅️ Strategies"]);
-  });
-
   it("runs a confirmation only once even if tapped twice", async () => {
-    const ui = setup(tradingApi(), trading);
+    const ui = setup(tradingApi());
     await openSwapQuote(ui);
     await ui.click("⚡ Swap SOL → USDC");
     const confirm = ui.buttons().find((b) => b.text === "✅ Confirm and send")?.callback_data ?? "";
@@ -364,7 +374,7 @@ describe("trading", () => {
     let release: () => void = () => {};
     const api = tradingApi();
     api.build = vi.fn(() => new Promise<BuiltStep[]>((resolve) => (release = () => resolve([builtStep()]))));
-    const { send, click, buttons, tap, alerts, settle } = setup(api, trading);
+    const { send, click, buttons, tap, alerts, settle } = setup(api);
     await send("/start");
     await click("1. Demo");
     await click("🧩 Strategies");
@@ -386,7 +396,7 @@ describe("trading", () => {
     ["➖ 50%", "dlmm/remove", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", bpsToRemove: 5000 }],
     ["🔁 Zap out to USDC", "dlmm/zap-out", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", slippageBps: 100 }],
   ])("builds %s on a DLMM position", async (label, action, body) => {
-    const { send, click, api, settle } = setup(tradingApi(), trading);
+    const { send, click, api, settle } = setup(tradingApi());
     await send("/start");
     await click("1. Demo");
     await click("🧩 Strategies");
@@ -399,8 +409,7 @@ describe("trading", () => {
 
   it("offers to close an empty swap strategy", async () => {
     const { send, click, api, settle } = setup(
-      { ...tradingApi(), getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratJup", symbol: "BONK", decimals: 5, vaultBalance: "0" }]) },
-      trading,
+      { ...tradingApi(), getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratJup", symbol: "BONK", decimals: 5, vaultBalance: "0" }]) }
     );
     await send("/start");
     await click("1. Demo");
@@ -416,7 +425,7 @@ describe("trading", () => {
     api.build = vi.fn(async () => {
       throw new ApiError(502, "JupiterUnsupportedCpiRoute", "Service temporarily unavailable");
     });
-    const ui = setup(api, trading);
+    const ui = setup(api);
     await openSwapQuote(ui);
     await ui.click("⚡ Swap SOL → USDC");
     await ui.click("✅ Confirm and send");
@@ -427,8 +436,7 @@ describe("trading", () => {
   });
 
   it("shows a refusal when the API builds a transaction for another payer", async () => {
-    const other: Trading = { signer: keypairSigner(Keypair.generate()) };
-    const { send, click, lastScreen, api, settle } = setup(tradingApi(), other);
+    const { send, click, lastScreen, api, settle } = setup(tradingApi(), Keypair.generate());
     await send("/start");
     await click("1. Demo");
     await click("🧩 Strategies");
@@ -452,7 +460,7 @@ describe("LP form", () => {
   }
 
   it("opens a pasted pool with a custom shape, price range, and two-sided sizing", async () => {
-    const ui = setup(tradingApi(), trading);
+    const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     expect(ui.api.getPool).toHaveBeenCalledWith(VAULT, POOL);
@@ -484,7 +492,7 @@ describe("LP form", () => {
   });
 
   it("searches pools by symbol and keeps only pools with the deposit token", async () => {
-    const ui = setup(tradingApi(), trading);
+    const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", "sol");
     expect(ui.api.searchPools).toHaveBeenCalledWith(VAULT, "sol");
@@ -495,7 +503,7 @@ describe("LP form", () => {
   });
 
   it("offers only the token a one-sided range can hold and checks balances at review", async () => {
-    const ui = setup(tradingApi(), trading);
+    const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     await ui.fill("⬇️ Min price", "140");
@@ -509,14 +517,14 @@ describe("LP form", () => {
   });
 
   it("rejects a pasted pool that does not include the deposit token", async () => {
-    const ui = setup({ ...tradingApi(), getPool: vi.fn(async () => ({ ...pool, tokenY: { mint: "Bonk111111111111111111111111111111111111111", symbol: "BONK", decimals: 5 } })) }, trading);
+    const ui = setup({ ...tradingApi(), getPool: vi.fn(async () => ({ ...pool, tokenY: { mint: "Bonk111111111111111111111111111111111111111", symbol: "BONK", decimals: 5 } })) });
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     expect(ui.replies.at(-1)).toBe("That pool does not include the vault's deposit token, USDC.\nTry again, or send /cancel.");
   });
 
   it("adds liquidity to an existing position with its own shape and sizing", async () => {
-    const ui = setup({ ...tradingApi(), getStrategies: vi.fn(async () => strategies.map((s) => (s.type === "dlmm" ? { ...s, lbPair: POOL } : s))) }, trading);
+    const ui = setup({ ...tradingApi(), getStrategies: vi.fn(async () => strategies.map((s) => (s.type === "dlmm" ? { ...s, lbPair: POOL } : s))) });
     await ui.send("/start");
     await ui.click("1. Demo");
     await ui.click("🧩 Strategies");
@@ -537,5 +545,156 @@ describe("LP form", () => {
       shape: "curve",
       maxActiveBinSlippage: 10,
     });
+  });
+});
+
+describe("wallets", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  const deleted = (calls: { method: string; payload: unknown }[]) =>
+    calls.filter((c) => c.method === "deleteMessage").map((c) => (c.payload as { message_id: number }).message_id);
+
+  it("sends a new user to the wallet menu instead of the vaults", async () => {
+    const { api, send, lastScreen, buttons } = setup({}, null);
+    await send("/start");
+    expect(lastScreen().text).toContain("Add the wallet that manages your vault to start.");
+    expect(buttons().map((b) => b.text)).toEqual(["📥 Import wallet", "✨ New wallet", "🔀 My wallets · switch"]);
+    expect(api.listVaults).not.toHaveBeenCalled();
+  });
+
+  it("imports a pasted private key, deleting the message, then checks and stores an API key", async () => {
+    const { api, wallets, send, click, type, lastScreen, calls, buttons } = setup({}, null);
+    const imported = Keypair.generate();
+    await send("/wallet");
+    await click("📥 Import wallet");
+    await type(bs58.encode(imported.secretKey));
+    expect(deleted(calls)).toContain(50);
+    expect(lastScreen().text).toContain("📥 <b>Wallet imported.</b>");
+    expect(lastScreen().text).toContain(imported.publicKey.toBase58());
+    expect(lastScreen().text).toContain("No API key yet.");
+
+    await click("🔐 Add API key");
+    await type("not an api key");
+    expect(lastScreen().text).toBe("An API key looks like hv1_<id>_<secret>.\nPaste it again, or send /cancel.");
+    await type(API_KEY);
+    expect(api.listVaults).toHaveBeenCalledTimes(1);
+    expect(deleted(calls).filter((id) => id === 50)).toHaveLength(3);
+    expect(lastScreen().text).toContain("🔐 <b>API key saved.</b>");
+    expect(buttons().map((b) => b.text)).toContain("🏦 Vaults");
+    const active = wallets.active(ALLOWED_USER);
+    expect(active && wallets.apiKey(ALLOWED_USER, active.id)).toBe(API_KEY);
+  });
+
+  it("does not store an API key the API rejects", async () => {
+    const { wallets, send, click, type, lastScreen } = setup(
+      { listVaults: vi.fn(async () => Promise.reject(new ApiError(401, "Unauthorized", "Invalid API key"))) },
+      null,
+    );
+    await send("/wallet");
+    await click("✨ New wallet");
+    await click("🔐 Add API key");
+    await type(API_KEY);
+    expect(lastScreen().text).toBe("The API rejected that key: it is wrong, revoked, or expired.\nPaste it again, or send /cancel.");
+    expect(wallets.active(ALLOWED_USER)?.hasApiKey).toBe(false);
+  });
+
+  it("generates a wallet and reveals its key once, protected and deleted after a minute", async () => {
+    vi.useFakeTimers();
+    const { wallets, send, click, calls, lastScreen } = setup({}, null);
+    await send("/wallet");
+    await click("✨ New wallet");
+    const active = wallets.active(ALLOWED_USER);
+    if (!active) throw new Error("no active wallet");
+    expect(active.origin).toBe("generated");
+    expect(lastScreen().text).toContain("✨ <b>New wallet created.</b>");
+
+    await click("🔑 Export private key");
+    await click("👁 Show private key");
+    const secret = bs58.encode(wallets.keypair(ALLOWED_USER, active.id).secretKey);
+    const reveal = calls.find((c) => c.method === "sendMessage" && c.payload.text.includes(secret));
+    expect(reveal?.payload).toMatchObject({ protect_content: true, parse_mode: "HTML" });
+    expect(reveal?.payload.text).toContain(`<tg-spoiler><code>${secret}</code></tg-spoiler>`);
+    const revealId = 100 + calls.filter((c) => c.method === "sendMessage").indexOf(reveal as (typeof calls)[number]);
+    expect(deleted(calls)).not.toContain(revealId);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(deleted(calls)).toContain(revealId);
+  });
+
+  it("switches the active wallet and expires buttons made for the previous one", async () => {
+    const { wallets, send, click, tap, buttons, lastScreen, replies } = setup();
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Swap");
+    const formButton = buttons()[0]?.callback_data ?? "";
+    const second = wallets.add(ALLOWED_USER, Keypair.generate(), "generated").wallet;
+    wallets.setApiKey(ALLOWED_USER, second.id, API_KEY);
+    const first = wallets.list(ALLOWED_USER)[0];
+    if (!first) throw new Error("no first wallet");
+    wallets.use(ALLOWED_USER, first.id);
+
+    await send("/wallet");
+    await click("🔀 My wallets · switch");
+    expect(buttons().map((b) => b.text)).toEqual([
+      `✅ ${manager.publicKey.toBase58().slice(0, 4)}…${manager.publicKey.toBase58().slice(-4)} · imported`,
+      "🗑",
+      `${second.publicKey.slice(0, 4)}…${second.publicKey.slice(-4)} · generated`,
+      "🗑",
+      "👛 Wallet",
+    ]);
+    await tap(buttons()[2]?.callback_data ?? "");
+    expect(lastScreen().text).toContain(`✅ Active wallet is now <code>${second.publicKey}</code>.`);
+    await tap(formButton);
+    expect(replies.at(-1)).toBe("❌ This button expired. Send /start to begin again.");
+  });
+
+  it("acts with a replaced API key from the next screen on", async () => {
+    const replacement = `hv1_next_${"b".repeat(64)}`;
+    const { send, click, type, listedWith } = setup();
+    await send("/start");
+    await send("/wallet");
+    await click("🔐 Replace API key");
+    await type(replacement);
+    await send("/vaults");
+    expect(listedWith).toEqual([API_KEY, replacement, replacement]);
+  });
+
+  it("removes a wallet only after confirmation", async () => {
+    const { wallets, send, click, buttons } = setup();
+    await send("/wallet");
+    await click("🔀 My wallets · switch");
+    await click("🗑");
+    expect(wallets.list(ALLOWED_USER)).toHaveLength(1);
+    await click("✖️ Keep it");
+    await click("🗑");
+    await click("🗑 Yes, remove it");
+    expect(wallets.list(ALLOWED_USER)).toEqual([]);
+    expect(buttons().map((b) => b.text)).toEqual(["👛 Wallet"]);
+  });
+
+  it("deletes a private key pasted outside the import prompt", async () => {
+    const { wallets, type, calls, replies } = setup({}, null);
+    await type(bs58.encode(Keypair.generate().secretKey));
+    expect(deleted(calls)).toEqual([50]);
+    expect(replies.at(-1)).toBe("That looked like a private key, so the bot deleted it. To add a wallet, use /wallet → 📥 Import wallet.");
+    expect(wallets.list(ALLOWED_USER)).toEqual([]);
+  });
+
+  it("ignores group chats, where others could read a pasted key", async () => {
+    const { bot, replies } = setup();
+    await bot.handleUpdate({
+      update_id: 4,
+      message: {
+        message_id: 51,
+        date: 0,
+        chat: { id: -100, type: "group", title: "G" },
+        from: { id: ALLOWED_USER, is_bot: false, first_name: "T" },
+        text: "/wallet",
+        entities: [{ type: "bot_command", offset: 0, length: 7 }],
+      },
+    });
+    expect(replies).toEqual([]);
   });
 });

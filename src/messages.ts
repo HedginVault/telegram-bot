@@ -44,13 +44,14 @@ const status = (value: string) => STATUS_LABEL[value] ?? `⚪ ${escapeHtml(value
 export const HELP_MESSAGE = [
   "🤖 <b>Hedge Vault manager bot</b>",
   "",
-  "Tap <b>Vaults</b> below and use the buttons.",
+  "Add your manager wallet under 👛 <b>Wallet</b> (import its private key, or create a new one), add the API key an admin issued for it, then tap <b>Vaults</b>.",
   "",
   "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, then set the amount (\"1.5\", \"25%\", \"max\") and slippage.",
   "<b>LP</b> · Vault → ➕ New LP position. Paste a pool or search by symbol, pick a shape, set min and max price, and size each token.",
   "",
   "<b>Commands</b>",
-  "/vaults · vaults this API key can manage",
+  "/vaults · vaults your active wallet manages",
+  "/wallet · import, create, export, or switch wallets",
   "/holdings &lt;vault&gt; · what a vault holds and is worth",
   "/strategies &lt;vault&gt; · open strategies",
   "/cancel · stop typing into a form",
@@ -138,7 +139,7 @@ export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): 
 
 type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
 
-export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy, trading: boolean): string {
+export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy): string {
   const { tokenX, tokenY } = strategy;
   const lines = [
     `⚙️ <b>${escapeHtml(tokenX.symbol)}/${escapeHtml(tokenY.symbol)} position</b> · ${escapeHtml(vault.name)}`,
@@ -148,7 +149,6 @@ export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy, tra
     `Holds ${amount(strategy.amountX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.amountY, tokenY.decimals, tokenY.symbol)}`,
     `Unclaimed fees ${amount(strategy.pendingFeeX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.pendingFeeY, tokenY.decimals, tokenY.symbol)}`,
   ];
-  if (!trading) lines.push("", "<i>Trading is off. Set MANAGER_KEYPAIR_PATH to manage this position.</i>");
   return lines.join("\n");
 }
 

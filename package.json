@@ -10,8 +10,7 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sdk:update": "node scripts/update-sdk.mjs",
-    "import-key": "tsx src/import-key.ts"
+    "sdk:update": "node scripts/update-sdk.mjs"
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {

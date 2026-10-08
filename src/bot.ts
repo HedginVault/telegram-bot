@@ -1,24 +1,27 @@
-import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary } from "@hedginvault/sdk";
+import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary, keypairSigner } from "@hedginvault/sdk";
 import { type Context, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery, message } from "telegraf/filters";
 import { type PendingAction, toActionRequest } from "./actions";
 import { InputError, applyFormOp, applyFormText } from "./forms";
 import { HELP_MESSAGE, errorHint, errorMessage, executionMessage, fitMessage } from "./messages";
 import { type ScreenDeps, renderScreen } from "./screens";
-import { type RenderedScreen, type Screen, ScreenNotice, type TextField, button, createIdStore, decodeScreen, keyboard } from "./ui";
+import { type RenderedScreen, type Screen, ScreenNotice, type TextField, button, createIdStore, decodeScreen, isWalletScreen, keyboard } from "./ui";
+import { EXPORT_VISIBLE_SECONDS, type WalletInput, type WalletResult, applyWalletText, walletScreen } from "./wallet-screens";
+import { WalletError, type WalletStore, parseSecretKey } from "./wallets";
 
 /** An input problem the user can fix by retyping the command. */
 class UsageError extends Error {}
 
 /** Plain-text description for logs. */
 export function describeError(error: unknown): string {
-  if (error instanceof UsageError || error instanceof ScreenNotice || error instanceof InputError) return error.message;
+  if (error instanceof UsageError || error instanceof ScreenNotice || error instanceof InputError || error instanceof WalletError) return error.message;
   if (error instanceof ApiError) return `API error ${error.status} (${error.code}): ${error.message}`;
   if (error instanceof Error && error.name === "TimeoutError") return "The Hedge Vault API did not answer in time. Try again.";
   return "Something went wrong. Check the bot logs.";
 }
 
-const isUserFacing = (error: unknown) => error instanceof UsageError || error instanceof ScreenNotice || error instanceof InputError;
+const isUserFacing = (error: unknown) =>
+  error instanceof UsageError || error instanceof ScreenNotice || error instanceof InputError || error instanceof WalletError;
 
 function errorReply(error: unknown): string {
   if (error instanceof ApiError) {
@@ -55,62 +58,100 @@ async function resolveVault(api: HedgeClient, reference: string | undefined, usa
   const vault = /^\d{1,3}$/.test(reference)
     ? vaults[Number(reference) - 1]
     : vaults.find((v) => v.address === reference || v.name.toLowerCase() === reference.toLowerCase());
-  if (!vault) throw new UsageError(`No vault "${reference}" for this API key. Send /vaults to see the list.`);
+  if (!vault) throw new UsageError(`No vault "${reference}" for your active wallet. Send /vaults to see the list.`);
   return vault;
 }
 
-export interface Trading {
-  /** Signs as the vault manager; the SDK refuses transactions it did not expect this key to pay for. */
-  signer: TransactionSigner;
+function looksLikePrivateKey(text: string): boolean {
+  try {
+    parseSecretKey(text);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** The form field a chat is typing into, and the messages to tidy up once it answers. */
-interface AwaitingInput {
-  formId: string;
-  field: TextField;
-  formMessageId: number;
-  promptMessageId: number;
+/**
+ * One user's active wallet with its API client and button stores. Switching wallets builds a
+ * new session, so buttons made for the old wallet expire instead of acting with the new one.
+ */
+interface Session {
+  walletId: string;
+  apiKey: string;
+  deps: ScreenDeps;
+  /** Signs as the vault manager; the SDK refuses transactions it did not expect this key to pay for. */
+  signer: TransactionSigner;
+  executing: boolean;
 }
+
+/** What a chat is typing into, and the messages to tidy up once it answers. */
+type AwaitingInput =
+  | { kind: "form"; formId: string; field: TextField; formMessageId: number; promptMessageId: number }
+  | { kind: "wallet"; input: WalletInput; promptMessageId: number };
 
 export function createBot(options: {
   token: string;
-  allowedUserIds: ReadonlySet<number>;
-  api: HedgeClient;
-  /** Absent means read-only: no trade buttons, nothing signs. */
-  trading?: Trading;
+  /** Unset means anyone can use the bot. */
+  allowedUserIds?: ReadonlySet<number>;
+  wallets: WalletStore;
+  /** An API client acting with one wallet's API key. */
+  clientFor: (apiKey: string) => HedgeClient;
   /** Actions outlive their button tap; tests pass a collector to await them. */
   runInBackground?: (task: Promise<void>) => void;
 }): Telegraf {
-  const { api, trading } = options;
-  const deps: ScreenDeps = {
-    api,
-    positions: createIdStore(),
-    actions: createIdStore(),
-    forms: createIdStore(),
-    trading: trading !== undefined,
-  };
-  const render = (screen: Screen) => renderScreen(screen, deps);
+  const { wallets, clientFor } = options;
   const runInBackground = options.runInBackground ?? ((task: Promise<void>) => void task);
   const bot = new Telegraf(options.token);
-  // ponytail: one action at a time for the whole bot; per-vault locks if several managers share it.
-  let executing = false;
-  // ponytail: in memory, so a restart forgets half-typed answers; the form buttons expire too.
+  // ponytail: in memory and never evicted, so a restart forgets half-typed answers and expires every
+  // session's buttons; evict idle sessions if memory grows with public users.
+  const sessions = new Map<number, Session>();
   const awaiting = new Map<number, AwaitingInput>();
 
-  async function runAction(ctx: Context, actionId: string): Promise<void> {
-    if (!trading) throw new ScreenNotice("Trading is off. Set MANAGER_KEYPAIR_PATH to enable it.");
-    if (executing) {
+  /** The user's active session, or undefined when they still need a wallet with an API key. */
+  function sessionOf(userId: number): Session | undefined {
+    const active = wallets.active(userId);
+    const apiKey = active && wallets.apiKey(userId, active.id);
+    if (!active || !apiKey) return undefined;
+    const current = sessions.get(userId);
+    if (current?.walletId === active.id && current.apiKey === apiKey) return current;
+    const session: Session = {
+      walletId: active.id,
+      apiKey,
+      deps: { api: clientFor(apiKey), positions: createIdStore(), actions: createIdStore(), forms: createIdStore() },
+      signer: keypairSigner(wallets.keypair(userId, active.id)),
+      executing: false,
+    };
+    sessions.set(userId, session);
+    return session;
+  }
+
+  const walletMenu = (userId: number) => {
+    const result = walletScreen({ kind: "wallet" }, userId, wallets);
+    if (result.kind !== "show") throw new Error("the wallet menu always shows");
+    return result.screen;
+  };
+
+  /** Vault screens need a wallet with an API key; without one the user lands on the wallet menu. */
+  async function renderFor(userId: number, screen: Screen): Promise<RenderedScreen> {
+    const session = sessionOf(userId);
+    return session ? renderScreen(screen, session.deps) : walletMenu(userId);
+  }
+
+  async function runAction(ctx: Context, session: Session, actionId: string): Promise<void> {
+    if (session.executing) {
       await ctx.answerCbQuery("Another transaction is still running. Wait for it to finish.", { show_alert: true });
       return;
     }
-    const action = deps.actions.take(actionId);
+    const action = session.deps.actions.take(actionId);
     if (!action) throw new ScreenNotice("This confirmation was already used or has expired. Start again from /start.");
-    executing = true;
+    session.executing = true;
     await ctx.answerCbQuery();
-    runInBackground(trackAction(ctx, action, trading));
+    runInBackground(trackAction(ctx, action, session));
   }
 
-  async function trackAction(ctx: Context, action: PendingAction, { signer }: Trading): Promise<void> {
+  async function trackAction(ctx: Context, action: PendingAction, session: Session): Promise<void> {
+    const { signer } = session;
+    const { api } = session.deps;
     const progress: Progress[] = [];
     const done = keyboard([[button("⬅️ Vault", { kind: "vault", vault: action.vault }), button("🏦 Vaults", { kind: "vaults" })]]);
     const show = (outcome?: Outcome) =>
@@ -130,32 +171,56 @@ export function createBot(options: {
       console.error("[telegram-bot] action crashed", { action: action.kind, error: describeError(error) });
       await replyHtml(ctx, errorReply(error)).catch(() => undefined);
     } finally {
-      executing = false;
+      session.executing = false;
     }
   }
 
-  // Unknown users get no reply, so the bot does not confirm it exists.
-  bot.use((ctx, next) => (ctx.from && options.allowedUserIds.has(ctx.from.id) ? next() : undefined));
+  /** Shows a wallet result; a revealed key goes in its own protected message that deletes itself. */
+  async function showWalletResult(ctx: Context, result: WalletResult, show: (screen: RenderedScreen) => Promise<unknown>): Promise<void> {
+    if (result.kind === "reveal") {
+      const secret = await ctx.reply(result.secretHtml, { ...HTML, protect_content: true });
+      // ponytail: a timer, so a restart inside the window leaves the message; the user can delete it too.
+      setTimeout(() => void ctx.deleteMessage(secret.message_id).catch(() => undefined), EXPORT_VISIBLE_SECONDS * 1000).unref();
+      await replyScreen(ctx, result.screen);
+      return;
+    }
+    if (result.kind === "show") await show(result.screen);
+  }
 
-  bot.start(async (ctx) => replyScreen(ctx, await render({ kind: "vaults" })));
-  bot.command("vaults", async (ctx) => replyScreen(ctx, await render({ kind: "vaults" })));
+  async function checkApiKey(apiKey: string): Promise<void> {
+    try {
+      await clientFor(apiKey).listVaults();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) throw new WalletError("The API rejected that key: it is wrong, revoked, or expired.");
+      throw error;
+    }
+  }
+
+  // Keys get pasted here, so the bot never works in groups where others could read them.
+  bot.use((ctx, next) => (ctx.chat?.type === "private" ? next() : undefined));
+  // With an allowlist, unknown users get no reply, so the bot does not confirm it exists.
+  bot.use((ctx, next) => (ctx.from && (!options.allowedUserIds || options.allowedUserIds.has(ctx.from.id)) ? next() : undefined));
+
+  bot.start(async (ctx) => replyScreen(ctx, await renderFor(ctx.from.id, { kind: "vaults" })));
+  bot.command("vaults", async (ctx) => replyScreen(ctx, await renderFor(ctx.from.id, { kind: "vaults" })));
+  bot.command("wallet", (ctx) => replyScreen(ctx, walletMenu(ctx.from.id)));
   bot.help((ctx) => ctx.reply(HELP_MESSAGE, { ...HTML, reply_markup: keyboard([[button("🏦 Vaults", { kind: "vaults" })]]) }));
   bot.command("cancel", async (ctx) => {
     const wasTyping = awaiting.delete(ctx.chat.id);
     await ctx.reply(wasTyping ? "Cancelled. The form keeps its other values." : "Nothing to cancel.");
   });
 
-  bot.command("holdings", async (ctx) => {
-    const vault = await resolveVault(api, ctx.payload.trim(), "/holdings <vault>");
-    await replyScreen(ctx, await render({ kind: "holdings", vault: vault.address }));
-  });
-
-  bot.command("strategies", async (ctx) => {
-    const vault = await resolveVault(api, ctx.payload.trim(), "/strategies <vault>");
-    await replyScreen(ctx, await render({ kind: "strategies", vault: vault.address }));
-  });
+  for (const [command, kind] of [["holdings", "holdings"], ["strategies", "strategies"]] as const) {
+    bot.command(command, async (ctx) => {
+      const session = sessionOf(ctx.from.id);
+      if (!session) return replyScreen(ctx, walletMenu(ctx.from.id));
+      const vault = await resolveVault(session.deps.api, ctx.payload.trim(), `/${command} <vault>`);
+      return replyScreen(ctx, await renderScreen({ kind, vault: vault.address }, session.deps));
+    });
+  }
 
   bot.on(callbackQuery("data"), async (ctx) => {
+    const userId = ctx.from.id;
     const chatId = ctx.chat?.id;
     // Tapping any button abandons a half-typed answer.
     if (chatId !== undefined) awaiting.delete(chatId);
@@ -164,31 +229,48 @@ export function createBot(options: {
       await ctx.answerCbQuery("Unknown button. Send /start.");
       return;
     }
-    if (screen.kind === "execute") {
-      await runAction(ctx, screen.actionId);
-      return;
-    }
     try {
+      if (isWalletScreen(screen)) {
+        const result = walletScreen(screen, userId, wallets);
+        await ctx.answerCbQuery();
+        if (result.kind === "ask") {
+          const prompt = await ctx.reply(result.prompt, { reply_markup: keyboard([[button("✖️ Cancel", { kind: "wallet" })]]) });
+          if (chatId !== undefined) awaiting.set(chatId, { kind: "wallet", input: result.input, promptMessageId: prompt.message_id });
+          return;
+        }
+        await showWalletResult(ctx, result, (rendered) => editScreen(ctx, rendered));
+        return;
+      }
+      const session = sessionOf(userId);
+      if (!session) {
+        await ctx.answerCbQuery();
+        await editScreen(ctx, walletMenu(userId));
+        return;
+      }
+      if (screen.kind === "execute") {
+        await runAction(ctx, session, screen.actionId);
+        return;
+      }
       let target: Screen = screen;
       if (screen.kind === "formOp") {
-        const result = await applyFormOp(screen.formId, screen.op, deps);
+        const result = await applyFormOp(screen.formId, screen.op, session.deps);
         if (result.kind === "ask") {
           await ctx.answerCbQuery();
           const prompt = await ctx.reply(result.prompt, { reply_markup: keyboard([[button("✖️ Cancel", { kind: "form", formId: screen.formId })]]) });
           const formMessageId = ctx.callbackQuery.message?.message_id;
           if (chatId !== undefined && formMessageId !== undefined) {
-            awaiting.set(chatId, { formId: screen.formId, field: result.field, formMessageId, promptMessageId: prompt.message_id });
+            awaiting.set(chatId, { kind: "form", formId: screen.formId, field: result.field, formMessageId, promptMessageId: prompt.message_id });
           }
           return;
         }
         target = result.screen;
       }
-      const rendered = await render(target);
+      const rendered = await renderScreen(target, session.deps);
       await ctx.answerCbQuery();
       await editScreen(ctx, rendered);
     } catch (error) {
       // Form mistakes pop up over the form instead of scrolling the chat.
-      if (error instanceof InputError) {
+      if (error instanceof InputError || error instanceof WalletError) {
         await ctx.answerCbQuery(error.message, { show_alert: true });
         return;
       }
@@ -199,12 +281,35 @@ export function createBot(options: {
 
   bot.on(message("text"), async (ctx) => {
     const pending = awaiting.get(ctx.chat.id);
-    if (!pending) {
+    if (pending?.kind === "wallet") {
+      // The message holds a private key or API key: delete it before anything else can fail.
+      await ctx.deleteMessage(ctx.message.message_id).catch(() => undefined);
+      try {
+        const screen = await applyWalletText(pending.input, ctx.message.text, ctx.from.id, wallets, checkApiKey);
+        awaiting.delete(ctx.chat.id);
+        await ctx.deleteMessage(pending.promptMessageId).catch(() => undefined);
+        await replyScreen(ctx, screen);
+      } catch (error) {
+        if (error instanceof WalletError) {
+          await ctx.reply(`${error.message}\nPaste it again, or send /cancel.`);
+          return;
+        }
+        throw error;
+      }
+      return;
+    }
+    if (looksLikePrivateKey(ctx.message.text)) {
+      await ctx.deleteMessage(ctx.message.message_id).catch(() => undefined);
+      await ctx.reply("That looked like a private key, so the bot deleted it. To add a wallet, use /wallet → 📥 Import wallet.");
+      return;
+    }
+    const session = sessionOf(ctx.from.id);
+    if (!pending || !session) {
       await ctx.reply("Send /start for the menu.");
       return;
     }
     try {
-      await applyFormText(pending.formId, pending.field, ctx.message.text, deps);
+      await applyFormText(pending.formId, pending.field, ctx.message.text, session.deps);
     } catch (error) {
       if (error instanceof InputError) {
         await ctx.reply(`${error.message}\nTry again, or send /cancel.`);
@@ -215,7 +320,7 @@ export function createBot(options: {
     awaiting.delete(ctx.chat.id);
     // Move the form below the answer so it stays the newest message.
     await Promise.allSettled([ctx.deleteMessage(pending.promptMessageId), ctx.deleteMessage(pending.formMessageId)]);
-    await replyScreen(ctx, await render({ kind: "form", formId: pending.formId }));
+    await replyScreen(ctx, await renderScreen({ kind: "form", formId: pending.formId }, session.deps));
   });
 
   bot.catch(async (error, ctx) => {

@@ -43,7 +43,21 @@ export type Screen =
   | { kind: "swapQuote"; formId: string }
   | { kind: "confirm"; actionId: string }
   /** Not rendered: the bot runs the stored action. */
-  | { kind: "execute"; actionId: string };
+  | { kind: "execute"; actionId: string }
+  | WalletScreen;
+
+/** Wallet management; handled by the bot because most of these change stored wallets. */
+export type WalletScreen =
+  | { kind: "wallet" }
+  | { kind: "wallets" }
+  | { kind: "walletNew" }
+  | { kind: "walletImport" }
+  | { kind: "walletApiKey" }
+  | { kind: "walletExport" }
+  | { kind: "walletReveal" }
+  | { kind: "walletUse"; walletId: string }
+  | { kind: "walletRemove"; walletId: string }
+  | { kind: "walletRemoved"; walletId: string };
 
 /**
  * Telegram caps callback data at 64 bytes, too small for a vault plus two mints. Larger button
@@ -125,8 +139,14 @@ function decodeOp(text: string): FormOp | undefined {
 
 const VAULT_SCREENS = { v: "vault", h: "holdings", s: "strategies", ns: "newSwap", nl: "newLp" } as const;
 const STORE_SCREENS = { p: "position", al: "addLp", f: "form", q: "swapQuote", c: "confirm", x: "execute" } as const;
+const WALLET_SCREENS = { w: "wallet", ws: "wallets", wn: "walletNew", wi: "walletImport", wk: "walletApiKey", we: "walletExport", wx: "walletReveal" } as const;
+const WALLET_ID_SCREENS = { wu: "walletUse", wr: "walletRemove", wd: "walletRemoved" } as const;
 type VaultScreenKind = (typeof VAULT_SCREENS)[keyof typeof VAULT_SCREENS];
 type StoreScreenKind = (typeof STORE_SCREENS)[keyof typeof STORE_SCREENS];
+type WalletScreenKind = (typeof WALLET_SCREENS)[keyof typeof WALLET_SCREENS];
+type WalletIdScreenKind = (typeof WALLET_ID_SCREENS)[keyof typeof WALLET_ID_SCREENS];
+const WALLET_SCREEN_KINDS: ReadonlySet<string> = new Set([...Object.values(WALLET_SCREENS), ...Object.values(WALLET_ID_SCREENS)]);
+export const isWalletScreen = (screen: Screen): screen is WalletScreen => WALLET_SCREEN_KINDS.has(screen.kind);
 const prefixOf = <K extends string>(table: Record<string, K>, kind: K) => Object.entries(table).find(([, k]) => k === kind)?.[0] ?? "";
 
 export function encodeScreen(screen: Screen): string {
@@ -150,12 +170,27 @@ export function encodeScreen(screen: Screen): string {
       return `${prefixOf<StoreScreenKind>(STORE_SCREENS, screen.kind)}:${screen.actionId}`;
     case "formOp":
       return `o:${screen.formId}:${encodeOp(screen.op)}`;
+    case "wallet":
+    case "wallets":
+    case "walletNew":
+    case "walletImport":
+    case "walletApiKey":
+    case "walletExport":
+    case "walletReveal":
+      return prefixOf<WalletScreenKind>(WALLET_SCREENS, screen.kind);
+    case "walletUse":
+    case "walletRemove":
+    case "walletRemoved":
+      return `${prefixOf<WalletIdScreenKind>(WALLET_ID_SCREENS, screen.kind)}:${screen.walletId}`;
   }
 }
 
 /** Callback data arrives from the client, so anything unexpected decodes to undefined. */
 export function decodeScreen(data: string): Screen | undefined {
   if (data === "vaults") return { kind: "vaults" };
+  if (Object.hasOwn(WALLET_SCREENS, data)) return { kind: WALLET_SCREENS[data as keyof typeof WALLET_SCREENS] };
+  const wallet = new RegExp(`^(${Object.keys(WALLET_ID_SCREENS).join("|")}):(${STORE_ID})$`).exec(data);
+  if (wallet) return { kind: WALLET_ID_SCREENS[wallet[1] as keyof typeof WALLET_ID_SCREENS], walletId: wallet[2] as string };
   const vault = new RegExp(`^(${Object.keys(VAULT_SCREENS).join("|")}):(${ADDRESS})$`).exec(data);
   if (vault) return { kind: VAULT_SCREENS[vault[1] as keyof typeof VAULT_SCREENS], vault: vault[2] as string };
   const stored = new RegExp(`^(${Object.keys(STORE_SCREENS).join("|")}):(${STORE_ID})$`).exec(data);
@@ -184,4 +219,5 @@ export const button = (text: string, screen: Screen) => Markup.button.callback(t
 export type Button = ReturnType<typeof button>;
 export const keyboard = (rows: Button[][]) => Markup.inlineKeyboard(rows).reply_markup;
 export const homeButton = () => button("🏦 Vaults", { kind: "vaults" });
+export const walletButton = () => button("👛 Wallet", { kind: "wallet" });
 export const formButton = (text: string, formId: string, op: FormOp) => button(text, { kind: "formOp", formId, op });

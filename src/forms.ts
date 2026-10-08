@@ -137,7 +137,6 @@ export interface FormDeps {
   api: HedgeClient;
   forms: IdStore<Form>;
   actions: IdStore<PendingAction>;
-  trading: boolean;
 }
 
 /** After a button: show a screen, or ask the user to type a field. */
@@ -389,7 +388,7 @@ function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps
     ...SLIPPAGE_PRESETS.map((bps) => op(`${form.slippageBps === bps ? "✓ " : ""}${bps / 100}%`, { op: "slippage", bps })),
     op(SLIPPAGE_PRESETS.includes(form.slippageBps as (typeof SLIPPAGE_PRESETS)[number]) ? "✏️ Slippage" : `✓ ${form.slippageBps / 100}% ✏️`, { op: "ask", field: "slippage" }),
   ]);
-  if (form.token && form.amount) rows.push([op(deps.trading ? "📈 Quote & review" : "📈 Get quote", { op: "quote" })]);
+  if (form.token && form.amount) rows.push([op("📈 Quote & review", { op: "quote" })]);
   rows.push([button("⬅️ Vault", { kind: "vault", vault: form.vault })]);
   return { html: swapFormMessage(form, inputBalance), keyboard: keyboard(rows) };
 }
@@ -437,18 +436,19 @@ export async function renderSwapQuote(formId: string, deps: FormDeps): Promise<R
     amount: amountBaseUnits,
     slippageBps: form.slippageBps,
   });
-  const rows: Button[][] = [];
-  if (deps.trading) {
-    const action: PendingAction = {
-      kind: "swap",
-      vault: form.vault,
-      ...tokens,
-      amountBaseUnits,
-      slippageBps: form.slippageBps,
-      unverified: needsWarning(form.token),
-    };
-    rows.push([button(`⚡ Swap ${tokens.input.symbol} → ${tokens.output.symbol}`, { kind: "confirm", actionId: deps.actions.put(action) })]);
-  }
-  rows.push([button("🔄 Refresh", { kind: "swapQuote", formId }), button("✏️ Edit", { kind: "form", formId })]);
-  return { html: swapQuoteMessage(form, tokens, amountBaseUnits, quote), keyboard: keyboard(rows) };
+  const action: PendingAction = {
+    kind: "swap",
+    vault: form.vault,
+    ...tokens,
+    amountBaseUnits,
+    slippageBps: form.slippageBps,
+    unverified: needsWarning(form.token),
+  };
+  return {
+    html: swapQuoteMessage(form, tokens, amountBaseUnits, quote),
+    keyboard: keyboard([
+      [button(`⚡ Swap ${tokens.input.symbol} → ${tokens.output.symbol}`, { kind: "confirm", actionId: deps.actions.put(action) })],
+      [button("🔄 Refresh", { kind: "swapQuote", formId }), button("✏️ Edit", { kind: "form", formId })],
+    ]),
+  };
 }

@@ -8,29 +8,55 @@ Hedge Vault vaults through the manager bot API (`/api/external/v1`). It serves t
 
 The API contract lives in `app/docs/manager-api.md` in the sibling `app/` repository.
 
+## Wallets
+
+The bot is public: anyone can open it in a private chat (groups are ignored, because keys are
+pasted into the chat). Each Telegram user keeps their own wallets under `/wallet` (👛 Wallet):
+
+| Button | What it does |
+| --- | --- |
+| 📥 Import wallet | Paste a private key (base58 as Phantom/Solflare export it, or a Solana CLI JSON array). The bot deletes the message at once. |
+| ✨ New wallet | Creates a fresh keypair. It manages no vault until an admin whitelists it and it creates one. |
+| 🔐 Add API key | Paste the `hv1_…` key an admin issued for this wallet's address. The bot checks it against the API, deletes the message, and stores it. |
+| 🔑 Export private key | After a warning, sends the key as a protected spoiler message that deletes itself after 60 seconds. |
+| 🔀 My wallets · switch | Lists up to 10 wallets; tap one to make it active, 🗑 to delete the bot's copy (asks first). |
+
+Vault screens, balances, and trades always use the **active** wallet and its API key. Each API
+key is bound to one manager wallet, so every wallet needs its own key from the admin dashboard.
+Switching wallets expires form and confirm buttons made for the previous one. A private key
+pasted anywhere else is deleted too.
+
+### Custody
+
+The bot is a hot wallet. Private keys and API keys are stored AES-256-GCM encrypted in
+`WALLET_STORE_PATH` (default `data/wallets.json`, owner-only, git-ignored). Each value is bound
+to its Telegram user, wallet, and field, so a value copied into another slot does not decrypt.
+The master key is `WALLET_ENCRYPTION_KEY` (`openssl rand -hex 32`). The bot refuses to start if
+the store does not open with it.
+
+Anyone with both the store file and the master key controls every stored wallet, and vault
+authority can never be moved on chain. Keep the two apart, back both up, and never log them.
+Losing either loses every generated wallet that its user did not export. Telegram chats are not
+end-to-end encrypted: a pasted key passes through Telegram's servers before the bot deletes it.
+
 ## Commands
 
-Without `MANAGER_KEYPAIR_PATH` the bot is read-only and cannot move funds. `/start` opens a
-button menu; the commands below also work.
+`/start` opens the vaults (or the wallet menu until the active wallet has an API key). The
+commands below also work.
 
 | Command | What it shows |
 | --- | --- |
-| `/vaults` | Numbered list of vaults the API key can manage |
+| `/wallet` | Import, create, export, or switch wallets |
+| `/vaults` | Numbered list of vaults the active wallet manages |
 | `/holdings <vault>` | Live value, last NAV, and per-token exposure |
 | `/strategies <vault>` | Open Jupiter, Meteora DLMM, and Phoenix strategies |
-| `/quote <vault> <inputMint> <outputMint> <amount> [slippageBps]` | Jupiter quote; one mint must be the vault deposit mint |
 
-`<vault>` is a vault address or its number from `/vaults`. `<amount>` is in base units
-(1 USDC = `1000000`). Slippage defaults to 50 bps.
+`<vault>` is a vault address or its number from `/vaults`.
 
 API responses are checked against the documented V1 contract. A response that does not
 match is reported as `contract_mismatch` instead of being shown half-parsed.
 
 ## Trading
-
-Trading is off unless `MANAGER_KEYPAIR_PATH` points to a Solana CLI keypair file (a JSON
-array of 64 numbers). That key must be the vault's current authority and the API key's
-manager. With it set, these buttons appear:
 
 | Where | What you set | API builder |
 | --- | --- | --- |
@@ -45,26 +71,7 @@ manager. With it set, these buttons appear:
 Fields you type into ask with a prompt; answer in the chat, or send `/cancel`. Prices are the
 pool's quote token per base token; the bot converts them to bins and shows the actual edge
 prices, bin count, and which tokens the range can hold. Pasted tokens that Jupiter has not
-verified are flagged on the form and the confirm screen. Token lookups need app PR #18.
-
-### Getting the keypair file
-
-To use the wallet that already manages your vault (for example Phantom):
-
-1. In the wallet, open the account's **Show private key** and copy it.
-2. Convert it without it ever appearing on screen:
-   ```sh
-   mkdir -p keys && chmod 700 keys
-   pbpaste | yarn -s import-key keys/manager.json
-   ```
-   The command saves an owner-only file and prints only the public key. It refuses to
-   overwrite a file, and inside this repository it only writes git-ignored paths (`keys/` is
-   ignored).
-3. Clear the clipboard, check the printed public key is the vault's manager, and set
-   `MANAGER_KEYPAIR_PATH=keys/manager.json`.
-
-The program has no instruction to change a vault's authority, so this key controls the vault
-permanently. Keep the file only on the machine that runs the bot.
+verified are flagged on the form and the confirm screen.
 
 Every action shows a confirm screen first. Then the bot builds, checks, signs, sends, and
 polls each transaction, editing one message with live progress and Solscan links.
@@ -75,15 +82,14 @@ Safety rules the bot enforces:
   key, already signed by any other required signer, and call only the Hedge Vault program,
   ComputeBudget, Associated Token Account, Meteora DLMM, or Jupiter at the top level. The
   priority fee is capped at 100,000 microLamports per CU. Anything else is refused unsigned.
-- **One shot.** A confirm button works once. Only one action runs at a time.
+- **One shot.** A confirm button works once. Only one action per user runs at a time.
 - **No blind retries.** An ambiguous send is polled by its receipt. The bot never rebuilds
   after it, because a rebuild could execute the action twice. If it cannot tell, it says so
   and links the transaction.
 
 Opening a position reads the pool's active bin from `GET /dlmm/pools/{lbPair}` (deployed).
 
-The keypair holds real funds on mainnet. Use a dedicated demo vault with its own authority
-key and a small balance. Never commit the keypair file.
+Stored keys control real funds on mainnet. Never commit `data/`, `.env`, or a backup of either.
 
 ## SDK
 
@@ -99,9 +105,11 @@ The API checker moved to the SDK: run `hedge-check-api` there.
 ## Setup
 
 1. Create a bot with [@BotFather](https://t.me/BotFather) and copy its token.
-2. Create a manager API key in the admin dashboard with the `read` action.
-3. Find your numeric Telegram user ID (for example with @userinfobot).
-4. Copy `.env.example` to `.env` and fill in the values.
+2. Copy `.env.example` to `.env` and set `TELEGRAM_BOT_TOKEN` and `WALLET_ENCRYPTION_KEY`
+   (`openssl rand -hex 32`). Optional: `WALLET_STORE_PATH`, `HEDGE_API_BASE_URL`,
+   `HEDGE_PROGRAM_ID`, and `ALLOWED_TELEGRAM_USER_IDS`.
+3. Managers get their API keys from an admin (dashboard, with the `read` action and the
+   builder actions they need), then add them in the bot.
 
 ```sh
 yarn install --frozen-lockfile
@@ -110,11 +118,11 @@ yarn test
 yarn build && yarn start
 ```
 
-Only user IDs listed in `ALLOWED_TELEGRAM_USER_IDS` get replies. Everyone else is ignored.
+Leave `ALLOWED_TELEGRAM_USER_IDS` unset for a public bot. Set it (comma-separated numeric
+Telegram user IDs) to limit replies to those users during a staged rollout.
 
 ## Safety
 
 `HEDGE_API_BASE_URL` defaults to production (`https://hedgin.xyz`), which runs on
 Solana mainnet. Reads are harmless. Any future command that signs or sends a transaction
-moves real funds: use a dedicated demo vault with its own manager key and a small balance.
-Never commit `.env`, API keys, or keypair files.
+moves real funds. Never commit `.env`, `data/`, API keys, or keypair files.

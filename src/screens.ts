@@ -13,6 +13,7 @@ import {
   expired,
   homeButton,
   keyboard,
+  walletButton,
 } from "./ui";
 
 export interface ScreenDeps extends FormDeps {
@@ -28,7 +29,7 @@ const pairLabel = (s: DlmmStrategy) => `${s.tokenX.symbol}/${s.tokenY.symbol}`;
 
 async function findVault(api: HedgeClient, address: string): Promise<VaultSummary> {
   const vault = (await api.listVaults()).find((v) => v.address === address);
-  if (!vault) throw new ScreenNotice("That vault is no longer in this API key's scope.");
+  if (!vault) throw new ScreenNotice("That vault is not managed by your active wallet's API key.");
   return vault;
 }
 
@@ -50,19 +51,17 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         html: vaultsMessage(vaults),
         keyboard: keyboard([
           ...vaults.map((vault, index) => [button(`${index + 1}. ${vault.name}`, { kind: "vault", vault: vault.address })]),
-          [button("🔄 Refresh", screen)],
+          [button("🔄 Refresh", screen), walletButton()],
         ]),
       };
     }
     case "vault": {
       const vault = await findVault(api, screen.vault);
-      const trade: Button[] = [button(deps.trading ? "💱 Swap" : "💱 Quote a swap", { kind: "newSwap", vault: vault.address })];
-      if (deps.trading) trade.push(button("➕ New LP position", { kind: "newLp", vault: vault.address }));
       return {
         html: vaultMessage(vault),
         keyboard: keyboard([
           [button("📊 Holdings", { kind: "holdings", vault: vault.address }), button("🧩 Strategies", { kind: "strategies", vault: vault.address })],
-          trade,
+          [button("💱 Swap", { kind: "newSwap", vault: vault.address }), button("➕ New LP position", { kind: "newLp", vault: vault.address })],
           [homeButton()],
         ]),
       };
@@ -82,7 +81,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
           const refId = deps.positions.put({ vault: vault.address, position: strategy.position });
           return [[button(`⚙️ ${pairLabel(strategy)} position`, { kind: "position", refId })]];
         }
-        if (strategy.type === "jupiter" && strategy.vaultBalance === "0" && deps.trading) {
+        if (strategy.type === "jupiter" && strategy.vaultBalance === "0") {
           const action: PendingAction = { kind: "closeStrategy", vault: vault.address, strategy: strategy.address, label: `${strategy.symbol} swap strategy` };
           return [[confirmButton(deps, `🗑 Close empty ${strategy.symbol} strategy`, action)]];
         }
@@ -96,7 +95,6 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
     case "position": {
       const { vault, strategy } = await findPosition(deps, screen.refId);
       const back = button("⬅️ Strategies", { kind: "strategies", vault: vault.address });
-      if (!deps.trading) return { html: positionMessage(vault, strategy, false), keyboard: keyboard([[button("🔄 Refresh", screen), back]]) };
       const base = { vault: vault.address, position: strategy.position, pairLabel: pairLabel(strategy) };
       const removeButton = (bps: RemoveBps) => confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps });
       const rows: Button[][] = [[confirmButton(deps, "💰 Claim fees", { kind: "dlmmClaim", ...base })]];
@@ -106,7 +104,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
         [button("🔄 Refresh", screen), back],
       );
-      return { html: positionMessage(vault, strategy, true), keyboard: keyboard(rows) };
+      return { html: positionMessage(vault, strategy), keyboard: keyboard(rows) };
     }
     case "newSwap": {
       const vault = await findVault(api, screen.vault);
@@ -147,8 +145,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         ]),
       };
     }
-    case "formOp":
-    case "execute":
+    default:
       throw new Error(`${screen.kind} is handled by the bot, not rendered`);
   }
 }
