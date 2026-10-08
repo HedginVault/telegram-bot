@@ -1,13 +1,22 @@
 import { Telegram } from "telegraf";
 import type { Update } from "telegraf/types";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, type BuiltStep, type HedgeApi } from "../src/api";
+import {
+  ApiError,
+  type BuiltStep,
+  DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  type HedgeClient,
+  executeBuild,
+  keypairSigner,
+  toBuildRequest,
+} from "@hedginvault/sdk";
 import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { type Trading, createBot } from "../src/bot";
 import { SOL, USDC, VAULT, holdings, quote, strategies, vaultSummary } from "./fixtures";
 
 const ALLOWED_USER = 42;
+const PROGRAM_ID = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt";
 
 function commandUpdate(fromId: number, text: string): Update {
   const command = text.split(" ")[0] ?? text;
@@ -43,8 +52,8 @@ interface SentPayload {
   reply_markup?: { inline_keyboard: { text: string; callback_data: string }[][] };
 }
 
-function setup(overrides: Partial<HedgeApi> = {}, trading?: Trading) {
-  const api: HedgeApi = {
+function setup(overrides: Partial<HedgeClient> = {}, trading?: Trading) {
+  const api: HedgeClient = {
     listVaults: vi.fn(async () => [vaultSummary]),
     getHoldings: vi.fn(async () => holdings),
     getStrategies: vi.fn(async () => strategies),
@@ -58,6 +67,16 @@ function setup(overrides: Partial<HedgeApi> = {}, trading?: Trading) {
     status: vi.fn(async () => {
       throw new Error("unexpected status");
     }),
+    searchPools: vi.fn(),
+    // The real SDK executor, running over this fake's build/send/status.
+    execute: (request, signer, options) =>
+      executeBuild(
+        toBuildRequest(request),
+        api,
+        signer,
+        { manager: signer.publicKey, programId: PROGRAM_ID, maxComputeUnitPriceMicroLamports: DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS },
+        options,
+      ),
     ...overrides,
   };
   const background: Promise<void>[] = [];
@@ -146,8 +165,8 @@ describe("bot", () => {
     const { api, send, replies } = setup();
     await send(`/quote 1 ${USDC} ${SOL} 1000000`);
     await send(`/quote 1 ${USDC} ${SOL} 1000000 25`);
-    expect(api.getQuote).toHaveBeenNthCalledWith(1, { vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "1000000", slippageBps: 50 });
-    expect(api.getQuote).toHaveBeenNthCalledWith(2, { vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "1000000", slippageBps: 25 });
+    expect(api.getQuote).toHaveBeenNthCalledWith(1, { vault: VAULT, inputMint: USDC, outputMint: SOL, amount: "1000000", slippageBps: 50 });
+    expect(api.getQuote).toHaveBeenNthCalledWith(2, { vault: VAULT, inputMint: USDC, outputMint: SOL, amount: "1000000", slippageBps: 25 });
     expect(replies[0]).toMatch(/^💱 <b>Jupiter quote<\/b>/);
   });
 
@@ -208,7 +227,7 @@ describe("buttons", () => {
     expect(lastScreen().text).toContain("Vault balance <b>0.01 SOL</b>");
     expect(buttons().map((b) => b.text)).toEqual(["10%", "25%", "50%", "100%", "⬅️ Back"]);
     await click("25%");
-    expect(api.getQuote).toHaveBeenCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amountBaseUnits: "2500000", slippageBps: 50 });
+    expect(api.getQuote).toHaveBeenCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amount: "2500000", slippageBps: 50 });
     expect(lastScreen().text).toContain("You give <b>0.0025 SOL</b>\nYou get  <b>≈ 0.375 USDC</b>");
   });
 
@@ -219,7 +238,7 @@ describe("buttons", () => {
     await click("💱 Quote a swap");
     await click("Buy SOL");
     await click("50%");
-    expect(api.getQuote).toHaveBeenCalledWith({ vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "500000", slippageBps: 50 });
+    expect(api.getQuote).toHaveBeenCalledWith({ vault: VAULT, inputMint: USDC, outputMint: SOL, amount: "500000", slippageBps: 50 });
   });
 
   it("explains an expired quote button instead of quoting something else", async () => {
@@ -244,9 +263,8 @@ describe("buttons", () => {
   });
 });
 
-const PROGRAM_ID = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt";
 const manager = Keypair.generate();
-const trading: Trading = { manager, policy: { manager: manager.publicKey, programId: PROGRAM_ID } };
+const trading: Trading = { signer: keypairSigner(manager) };
 
 function builtStep(): BuiltStep {
   const blockhash = Keypair.generate().publicKey.toBase58();
@@ -259,7 +277,7 @@ function builtStep(): BuiltStep {
 }
 
 /** An API that builds one manager-paid step per action and confirms it on the first poll. */
-function tradingApi(): Partial<HedgeApi> {
+function tradingApi(): Partial<HedgeClient> {
   return {
     build: vi.fn(async () => [builtStep()]),
     send: vi.fn(async (transaction: string) => {
@@ -380,7 +398,7 @@ describe("trading", () => {
   });
 
   it("shows a refusal when the API builds a transaction for another payer", async () => {
-    const other: Trading = { manager: Keypair.generate(), policy: { manager: Keypair.generate().publicKey, programId: PROGRAM_ID } };
+    const other: Trading = { signer: keypairSigner(Keypair.generate()) };
     const { send, click, lastScreen, api, settle } = setup(tradingApi(), other);
     await send("/start");
     await click("1. Demo");
@@ -391,6 +409,6 @@ describe("trading", () => {
     await settle();
     expect(api.send).not.toHaveBeenCalled();
     expect(lastScreen().text).toMatch(/^🛑 /);
-    expect(lastScreen().text).toContain("is not the bot's manager key");
+    expect(lastScreen().text).toContain("is not the signer's key");
   });
 });

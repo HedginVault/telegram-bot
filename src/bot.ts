@@ -1,9 +1,7 @@
-import type { Keypair } from "@solana/web3.js";
 import { type Context, Markup, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery } from "telegraf/filters";
-import { type PendingAction, toBuildRequest } from "./actions";
-import { ApiError, type HedgeApi, type VaultSummary } from "./api";
-import { type Outcome, type Progress, execute } from "./executor";
+import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary } from "@hedginvault/sdk";
+import { type PendingAction, toActionRequest } from "./actions";
 import { HELP_MESSAGE, errorMessage, executionMessage, fitMessage, quoteMessage } from "./messages";
 import {
   DEFAULT_SLIPPAGE_BPS,
@@ -16,7 +14,6 @@ import {
   encodeScreen,
   renderScreen,
 } from "./screens";
-import type { SigningPolicy } from "./signer";
 
 /** An input problem the user can fix by retyping the command. */
 class UsageError extends Error {}
@@ -59,7 +56,7 @@ function args(payload: string): string[] {
 }
 
 /** Small numbers pick from /vaults; otherwise match an address exactly or a name ignoring case. */
-async function resolveVault(api: HedgeApi, reference: string | undefined, usage: string): Promise<VaultSummary> {
+async function resolveVault(api: HedgeClient, reference: string | undefined, usage: string): Promise<VaultSummary> {
   if (!reference) throw new UsageError(`Usage: ${usage}`);
   const vaults = await api.listVaults();
   const vault = /^\d{1,3}$/.test(reference)
@@ -70,14 +67,14 @@ async function resolveVault(api: HedgeApi, reference: string | undefined, usage:
 }
 
 export interface Trading {
-  manager: Keypair;
-  policy: SigningPolicy;
+  /** Signs as the vault manager; the SDK refuses transactions it did not expect this key to pay for. */
+  signer: TransactionSigner;
 }
 
 export function createBot(options: {
   token: string;
   allowedUserIds: ReadonlySet<number>;
-  api: HedgeApi;
+  api: HedgeClient;
   /** Absent means read-only: no trade buttons, nothing signs. */
   trading?: Trading;
   /** Actions outlive their button tap; tests pass a collector to await them. */
@@ -110,7 +107,7 @@ export function createBot(options: {
     runInBackground(trackAction(ctx, action, trading));
   }
 
-  async function trackAction(ctx: Context, action: PendingAction, { manager, policy }: Trading): Promise<void> {
+  async function trackAction(ctx: Context, action: PendingAction, { signer }: Trading): Promise<void> {
     const progress: Progress[] = [];
     const done = Markup.inlineKeyboard([
       [Markup.button.callback("⬅️ Vault", encodeScreen({ kind: "vault", vault: action.vault })), Markup.button.callback("🏦 Vaults", encodeScreen({ kind: "vaults" }))],
@@ -119,10 +116,12 @@ export function createBot(options: {
       editScreen(ctx, { html: executionMessage(action, progress, outcome), keyboard: outcome ? done : { inline_keyboard: [] } });
     try {
       await show();
-      const outcome = await execute(toBuildRequest(action), { api, manager, policy }, async (step) => {
+      const outcome = await api.execute(toActionRequest(action), signer, {
+        onProgress: async (step) => {
         progress.push(step);
         // A failed progress edit must not interrupt a transaction that is already in flight.
         await show().catch(() => undefined);
+        },
       });
       console.info("[telegram-bot] action finished", { action: action.kind, vault: action.vault, outcome: outcome.kind, signatures: outcome.signatures });
       await show(outcome);
@@ -182,7 +181,7 @@ export function createBot(options: {
       vault: vault.address,
       inputMint,
       outputMint,
-      amountBaseUnits,
+      amount: amountBaseUnits,
       slippageBps: slippage === undefined ? DEFAULT_SLIPPAGE_BPS : Number(slippage),
     });
     await replyHtml(ctx, quoteMessage(quote));

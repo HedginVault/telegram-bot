@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Strategy, VaultSummary } from "../src/api";
+import type { Strategy, VaultSummary } from "@hedginvault/sdk";
 import {
   HELP_MESSAGE,
   errorMessage,

@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { Markup } from "telegraf";
 import type { InlineKeyboardMarkup } from "telegraf/types";
 import { type PendingAction, REMOVE_BPS, type RemoveBps } from "./actions";
-import type { HedgeApi, Strategy, VaultSummary } from "./api";
+import type { HedgeClient, Strategy, VaultSummary } from "@hedginvault/sdk";
 import {
   confirmMessage,
   holdingsMessage,
@@ -153,7 +153,7 @@ const keyboard = (rows: ReturnType<typeof button>[][]) => Markup.inlineKeyboard(
 const homeButton = button("🏦 Vaults", { kind: "vaults" });
 
 export interface ScreenDeps {
-  api: HedgeApi;
+  api: HedgeClient;
   pairs: IdStore<QuotePair>;
   positions: IdStore<PositionRef>;
   actions: IdStore<PendingAction>;
@@ -167,7 +167,7 @@ const confirmButton = (deps: ScreenDeps, text: string, action: PendingAction) =>
 type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
 const pairLabel = (s: DlmmStrategy) => `${s.tokenX.symbol}/${s.tokenY.symbol}`;
 
-async function findVault(api: HedgeApi, address: string): Promise<VaultSummary> {
+async function findVault(api: HedgeClient, address: string): Promise<VaultSummary> {
   const vault = (await api.listVaults()).find((v) => v.address === address);
   if (!vault) throw new ScreenNotice("That vault is no longer in this API key's scope.");
   return vault;
@@ -259,7 +259,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
               vault: action.vault,
               inputMint: action.input.mint,
               outputMint: action.output.mint,
-              amountBaseUnits: action.amountBaseUnits,
+              amount: action.amountBaseUnits,
               slippageBps: action.slippageBps,
             })
           : undefined;
@@ -315,7 +315,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         vault: pair.vault,
         inputMint: pair.input.mint,
         outputMint: pair.output.mint,
-        amountBaseUnits,
+        amount: amountBaseUnits,
         slippageBps: DEFAULT_SLIPPAGE_BPS,
       });
       if (!deps.trading) return { html: quoteResultMessage(pair, screen.percent, quote), keyboard: back };

@@ -1,12 +1,19 @@
-import { createHedgeApi } from "./api";
+import { createHedgeClient, keypairFromFile, keypairSigner } from "@hedginvault/sdk";
 import { createBot } from "./bot";
 import { loadConfig } from "./config";
-import { loadKeypair } from "./signer";
+
+function loadManager(path: string) {
+  try {
+    return keypairFromFile(path);
+  } catch (error) {
+    throw new Error(`MANAGER_KEYPAIR_PATH: ${error instanceof Error ? error.message : "unreadable"}`);
+  }
+}
 
 const config = loadConfig(process.env);
-const api = createHedgeApi({ baseUrl: config.apiBaseUrl, apiKey: config.apiKey });
-const manager = config.managerKeypairPath ? loadKeypair(config.managerKeypairPath) : undefined;
-const trading = manager && { manager, policy: { manager: manager.publicKey, programId: config.programId } };
+const api = createHedgeClient({ baseUrl: config.apiBaseUrl, apiKey: config.apiKey, programId: config.programId });
+const manager = config.managerKeypairPath ? loadManager(config.managerKeypairPath) : undefined;
+const trading = manager && { signer: keypairSigner(manager) };
 const bot = createBot({ token: config.telegramBotToken, allowedUserIds: config.allowedUserIds, api, trading });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));

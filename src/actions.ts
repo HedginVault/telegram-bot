@@ -1,5 +1,4 @@
-import type { BuildAction } from "./api";
-import type { BuildRequest } from "./executor";
+import type { ActionRequest } from "@hedginvault/sdk";
 import type { TokenRef } from "./screens";
 
 export const REMOVE_BPS = [2500, 5000, 10_000] as const;
@@ -15,27 +14,24 @@ export type PendingAction =
   | { kind: "dlmmZapOut"; vault: string; position: string; pairLabel: string; depositSymbol: string }
   | { kind: "closeStrategy"; vault: string; strategy: string; label: string };
 
-function request(action: BuildAction, body: Record<string, unknown>): BuildRequest {
-  return { action, body };
-}
-
-export function toBuildRequest(action: PendingAction): BuildRequest {
+export function toActionRequest(action: PendingAction): ActionRequest {
   switch (action.kind) {
     case "swap":
-      return request("jupiter/swap", {
+      return {
+        action: "jupiter/swap",
         vault: action.vault,
         sourceMint: action.input.mint,
         destinationMint: action.output.mint,
         amount: action.amountBaseUnits,
         slippageBps: action.slippageBps,
-      });
+      };
     case "dlmmClaim":
-      return request("dlmm/claim-fee", { vault: action.vault, position: action.position });
+      return { action: "dlmm/claim-fee", vault: action.vault, position: action.position };
     case "dlmmRemove":
-      return request("dlmm/remove", { vault: action.vault, position: action.position, bpsToRemove: action.bps });
+      return { action: "dlmm/remove", vault: action.vault, position: action.position, bpsToRemove: action.bps };
     case "dlmmZapOut":
-      return request("dlmm/zap-out", { vault: action.vault, position: action.position, slippageBps: ZAP_OUT_SLIPPAGE_BPS });
+      return { action: "dlmm/zap-out", vault: action.vault, position: action.position, slippageBps: ZAP_OUT_SLIPPAGE_BPS };
     case "closeStrategy":
-      return request("strategy/close", { vault: action.vault, strategy: action.strategy });
+      return { action: "strategy/close", vault: action.vault, strategy: action.strategy };
   }
 }

@@ -1,4 +1,4 @@
-import type { Holdings, Quote, Strategy, VaultSummary } from "../src/api";
+import type { Holdings, Quote, Strategy, VaultSummary } from "@hedginvault/sdk";
 
 export const VAULT = "Vau1t111111111111111111111111111111111111111";
 export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -8,6 +8,7 @@ export const vaultSummary: VaultSummary = {
   address: VAULT,
   name: "Demo",
   status: "normal",
+  depositMint: USDC,
   depositSymbol: "USDC",
   depositDecimals: 6,
   totalAssets: "1500000",

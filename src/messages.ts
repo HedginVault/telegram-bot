@@ -1,6 +1,5 @@
-import type { Holdings, Quote, Strategy, VaultSummary } from "./api";
+import type { Holdings, Outcome, Progress, Quote, Strategy, VaultSummary } from "@hedginvault/sdk";
 import type { PendingAction } from "./actions";
-import type { Outcome, Progress } from "./executor";
 import type { AmountPercent, QuotePair } from "./screens";
 import { formatBaseUnits } from "./format";
 

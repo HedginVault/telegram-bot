@@ -137,6 +137,13 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz#b21affb804cc167c133d95f45b3a1dc1323b9a87"
   integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
 
+"@hedginvault/sdk@file:./vendor/hedginvault-sdk.tgz":
+  version "0.1.0"
+  resolved "file:./vendor/hedginvault-sdk.tgz#b34adc5b1d4790d5047d90fe4b9f63f9df7fafbf"
+  dependencies:
+    bs58 "4.0.1"
+    zod "^3.23"
+
 "@jridgewell/sourcemap-codec@^1.5.5":
   version "1.6.0"
   resolved "https://registry.yarnpkg.com/@jridgewell/sourcemap-codec/-/sourcemap-codec-1.6.0.tgz#f4c663e862f06dc98ca4d453862c46902789a18d"

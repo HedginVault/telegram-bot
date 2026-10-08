@@ -60,22 +60,14 @@ active bin, which a safe range needs.
 The keypair holds real funds on mainnet. Use a dedicated demo vault with its own authority
 key and a small balance. Never commit the keypair file.
 
-## API checker
+## SDK
 
-`yarn check-api` probes the V1 API with the key in `.env` and prints a pass/fail table with
-response times. It exits non-zero when any check fails.
+API calls, transaction inspection, signing, and execution come from `@hedginvault/sdk` in
+the sibling `sdk/` repository. The bot installs it from `vendor/hedginvault-sdk.tgz` so it
+builds without the sibling checkout. After changing the SDK, run `yarn sdk:update` and
+commit the new tarball and `yarn.lock`.
 
-- Auth: missing, wrong, and malformed keys return 401.
-- Contract: `/vaults`, holdings, strategies, quotes, and pool search match the documented shapes for up to 3 vaults.
-- Validation: bad addresses, slippage, amounts, and mint pairs return 400; unknown routes 404.
-- Error bodies use `{ error: { code, message } }` and never leak provider logs or stack traces.
-
-`yarn check-api --build` also asks the API to build one unsigned 0.01-token swap per vault
-and checks the transaction and ticket. Nothing is signed or sent, so no funds move. It needs
-a key with the `jupiter/swap` action.
-
-The checker sends about 12 requests per vault and checks at most 3 vaults to stay under the
-API's 60 requests per minute per IP.
+The API checker moved to the SDK: run `hedge-check-api` there.
 
 ## Setup
 
