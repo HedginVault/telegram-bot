@@ -6,6 +6,9 @@ import {
   escapeHtml,
   fitMessage,
   holdingsMessage,
+  lpAmountMessage,
+  lpPoolsMessage,
+  lpRangeMessage,
   quoteAmountMessage,
   quoteMessage,
   quotePickMessage,
@@ -114,6 +117,10 @@ describe("messages", () => {
       quoteAmountMessage(hostilePair),
       quoteResultMessage(hostilePair, 25, { ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
       quoteResultMessage(hostilePair, 100, undefined),
+      lpPoolsMessage(hostileVault, HOSTILE, [{ address: "P", name: HOSTILE, tokenX: hostileToken, tokenY: hostileToken, binStep: 10, tvl: null }]),
+      lpPoolsMessage(hostileVault, HOSTILE, []),
+      lpRangeMessage({ lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: HOSTILE }, HOSTILE, true),
+      lpAmountMessage({ lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: "1" }, hostileToken, "0", { low: HOSTILE, high: HOSTILE }, 10),
     ];
     for (const html of rendered) {
       expect(() => assertTelegramHtml(html)).not.toThrow();

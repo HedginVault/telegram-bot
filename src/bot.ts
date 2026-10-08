@@ -86,6 +86,7 @@ export function createBot(options: {
     pairs: createIdStore(),
     positions: createIdStore(),
     actions: createIdStore(),
+    drafts: createIdStore(),
     trading: trading !== undefined,
   };
   const render = (screen: Screen) => renderScreen(screen, deps);

@@ -34,7 +34,9 @@ manager. With it set, these buttons appear:
 
 | Where | Button | API builder |
 | --- | --- | --- |
-| Quote result | ⚡ Swap | `jupiter/swap`, 50 bps slippage |
+| Vault → 💱 Swap → token → amount | ⚡ Swap, with 0.5 / 1 / 3% slippage buttons | `jupiter/swap` |
+| Vault → ➕ New LP position | pool → width (10 / 30 / 69 bins) → amount | `dlmm/open`, single-sided spot on the deposit token's side of the price |
+| DLMM position | ➕ 25% / 50% / 100% of the deposit token | `dlmm/add`, spot |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
 | DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
@@ -73,8 +75,8 @@ Safety rules the bot enforces:
   after it, because a rebuild could execute the action twice. If it cannot tell, it says so
   and links the transaction.
 
-Opening a new DLMM position is not supported: V1 pool search does not return the pool's
-active bin, which a safe range needs.
+Opening a position reads the pool's active bin from `GET /dlmm/pools/{lbPair}` (app PR #17).
+Until that is deployed, ➕ New LP position fails at the range step with a 404.
 
 The keypair holds real funds on mainnet. Use a dedicated demo vault with its own authority
 key and a small balance. Never commit the keypair file.
@@ -84,7 +86,9 @@ key and a small balance. Never commit the keypair file.
 API calls, transaction inspection, signing, and execution come from `@hedginvault/sdk` in
 the sibling `sdk/` repository. The bot installs it from `vendor/hedginvault-sdk.tgz` so it
 builds without the sibling checkout. After changing the SDK, run `yarn sdk:update` and
-commit the new tarball and `yarn.lock`.
+commit the new tarball, `package.json`, and `yarn.lock`. The tarball name carries a content
+hash because Yarn 1 caches `file:` tarballs by name and version and would otherwise keep
+installing the old build.
 
 The API checker moved to the SDK: run `hedge-check-api` there.
 

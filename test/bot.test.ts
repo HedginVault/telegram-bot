@@ -13,7 +13,7 @@ import {
 import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { type Trading, createBot } from "../src/bot";
-import { SOL, USDC, VAULT, holdings, quote, strategies, vaultSummary } from "./fixtures";
+import { POOL, SOL, USDC, VAULT, holdings, pool, poolSearch, quote, strategies, vaultSummary } from "./fixtures";
 
 const ALLOWED_USER = 42;
 const PROGRAM_ID = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt";
@@ -67,7 +67,8 @@ function setup(overrides: Partial<HedgeClient> = {}, trading?: Trading) {
     status: vi.fn(async () => {
       throw new Error("unexpected status");
     }),
-    searchPools: vi.fn(),
+    searchPools: vi.fn(async () => poolSearch),
+    getPool: vi.fn(async () => pool),
     // The real SDK executor, running over this fake's build/send/status.
     execute: (request, signer, options) =>
       executeBuild(
@@ -243,7 +244,7 @@ describe("buttons", () => {
 
   it("explains an expired quote button instead of quoting something else", async () => {
     const { tap, replies, api } = setup();
-    await tap("qq:AAAAAAAAAAA:25");
+    await tap("qq:AAAAAAAAAAA:25:50");
     expect(api.getQuote).not.toHaveBeenCalled();
     expect(replies).toEqual(["❌ This button expired. Send /start to begin again."]);
   });
@@ -298,7 +299,7 @@ describe("trading", () => {
     await click("💱 Quote a swap");
     await click("Sell SOL");
     await click("25%");
-    expect(buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "⬅️ Amount", "🏦 Vaults"]);
+    expect(buttons().map((b) => b.text)).toEqual(["✓ 0.5% slippage", "1% slippage", "3% slippage", "🔄 Refresh", "⬅️ Amount", "🏦 Vaults"]);
     await click("🏦 Vaults");
     await click("1. Demo");
     await click("🧩 Strategies");
@@ -311,7 +312,7 @@ describe("trading", () => {
     const { send, click, lastScreen, api, settle } = setup(tradingApi(), trading);
     await send("/start");
     await click("1. Demo");
-    await click("💱 Quote a swap");
+    await click("💱 Swap");
     await click("Sell SOL");
     await click("25%");
     await click("⚡ Swap SOL → USDC");
@@ -332,7 +333,7 @@ describe("trading", () => {
     const { send, click, buttons, tap, replies, api, settle } = setup(tradingApi(), trading);
     await send("/start");
     await click("1. Demo");
-    await click("💱 Quote a swap");
+    await click("💱 Swap");
     await click("Sell SOL");
     await click("25%");
     await click("⚡ Swap SOL → USDC");
@@ -410,5 +411,71 @@ describe("trading", () => {
     expect(api.send).not.toHaveBeenCalled();
     expect(lastScreen().text).toMatch(/^🛑 /);
     expect(lastScreen().text).toContain("is not the signer's key");
+  });
+
+  it("quotes and swaps with the slippage the user picked", async () => {
+    const { send, click, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Swap");
+    await click("Sell SOL");
+    await click("25%");
+    await click("3% slippage");
+    expect(api.getQuote).toHaveBeenLastCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amount: "2500000", slippageBps: 300 });
+    await click("⚡ Swap SOL → USDC");
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: SOL, destinationMint: USDC, amount: "2500000", slippageBps: 300 });
+  });
+
+  it("adds deposit-token liquidity to an existing position on its side of the pair", async () => {
+    const { send, click, buttons, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    expect(buttons().map((b) => b.text)).toContain("➕ 50% USDC");
+    await click("➕ 50% USDC");
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/add", {
+      vault: VAULT,
+      position: "Pos1111111111111111111111111111111111111111",
+      amountX: "0",
+      amountY: "500000",
+      shape: "spot",
+      maxActiveBinSlippage: 10,
+    });
+  });
+
+  it("opens a single-sided position: pool → width → amount → confirm", async () => {
+    const { send, click, buttons, lastScreen, api, settle } = setup(tradingApi(), trading);
+    await send("/start");
+    await click("1. Demo");
+    await click("➕ New LP position");
+    expect(api.searchPools).toHaveBeenCalledWith(VAULT, "USDC");
+    expect(buttons().map((b) => b.text)).toEqual(["SOL/USDC · 10 bps bins", "⬅️ Back"]);
+    expect(lastScreen().text).toContain("TVL $1.3M · 24h fees $3.4K");
+    await click("SOL/USDC · 10 bps bins");
+    expect(api.getPool).toHaveBeenCalledWith(VAULT, POOL);
+    expect(lastScreen().text).toContain("goes at and below the current price");
+    expect(buttons().map((b) => b.text)).toEqual(["10 bins · −0.9%", "30 bins · −2.9%", "69 bins · −7.0%", "⬅️ Pools"]);
+    await click("10 bins · −0.9%");
+    expect(lastScreen().text).toContain("Range 148.6567 to 150");
+    await click("25%");
+    expect(lastScreen().text).toContain("<b>Open a SOL/USDC position with 0.25 USDC</b>");
+    expect(lastScreen().text).toContain("bins -109 to -100");
+    await click("✅ Confirm and send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/open", {
+      vault: VAULT,
+      lbPair: POOL,
+      lowerBinId: -109,
+      upperBinId: -99,
+      amountX: "0",
+      amountY: "250000",
+      shape: "spot",
+      maxActiveBinSlippage: 10,
+    });
   });
 });

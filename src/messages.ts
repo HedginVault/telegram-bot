@@ -1,6 +1,7 @@
-import type { Holdings, Outcome, Progress, Quote, Strategy, VaultSummary } from "@hedginvault/sdk";
+import type { Holdings, Outcome, PoolInfo, PoolSearchPage, Progress, Quote, Strategy, VaultSummary } from "@hedginvault/sdk";
 import type { PendingAction } from "./actions";
-import type { AmountPercent, QuotePair } from "./screens";
+import type { LpWidth } from "./lp";
+import type { AmountPercent, QuotePair, TokenRef } from "./screens";
 import { formatBaseUnits } from "./format";
 
 // Telegram counts the limit after parsing entities, so measuring raw HTML is conservative.
@@ -218,6 +219,10 @@ export function actionTitle(action: PendingAction): string {
       return `Zap out the ${escapeHtml(action.pairLabel)} position to ${escapeHtml(action.depositSymbol)}`;
     case "closeStrategy":
       return `Close the empty ${escapeHtml(action.label)}`;
+    case "dlmmAdd":
+      return `Add ${amount(action.amounts.display.amountBaseUnits, action.amounts.display.token.decimals, action.amounts.display.token.symbol)} to the ${escapeHtml(action.pairLabel)} position`;
+    case "dlmmOpen":
+      return `Open a ${escapeHtml(action.pairLabel)} position with ${amount(action.amounts.display.amountBaseUnits, action.amounts.display.token.decimals, action.amounts.display.token.symbol)}`;
   }
 }
 
@@ -230,6 +235,13 @@ export function confirmMessage(vault: VaultSummary, action: PendingAction, quote
     );
   }
   if (action.kind === "dlmmRemove" && action.bps === 10_000) lines.push("<i>Tokens return to the vault; the empty position stays open.</i>");
+  if (action.kind === "dlmmOpen") {
+    lines.push(
+      `Range ${escapeHtml(action.priceRange.low)} to ${escapeHtml(action.priceRange.high)} · bins ${action.lowerBinId} to ${action.upperBinId - 1}`,
+      "<i>Single-sided spot. Creating the position costs a small refundable SOL rent from the manager wallet.</i>",
+    );
+  }
+  if (action.kind === "dlmmAdd") lines.push("<i>Spot shape across the position's existing range.</i>");
   if (action.kind === "dlmmZapOut") lines.push("<i>Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.</i>");
   lines.push("", "<blockquote>This signs and sends a real Solana mainnet transaction from the vault. It cannot be undone.</blockquote>");
   return lines.join("\n");
@@ -275,6 +287,46 @@ export function executionMessage(action: PendingAction, progress: Progress[], ou
 }
 
 const outcomeIcon = (outcome: Outcome) => ({ confirmed: "✅", refused: "🛑", failed: "❌", unresolved: "❓" })[outcome.kind];
+
+const usdCompact = (value: number | null | undefined) =>
+  value === null || value === undefined ? "?" : `$${Intl.NumberFormat("en-US", { notation: "compact", maximumFractionDigits: 1 }).format(value)}`;
+
+export function lpPoolsMessage(vault: VaultSummary, depositSymbol: string, pools: PoolSearchPage["pools"]): string {
+  const title = `➕ <b>New LP position</b> · ${escapeHtml(vault.name)}`;
+  if (pools.length === 0) return `${title}\n\nNo Meteora DLMM pool pairs with ${escapeHtml(depositSymbol)}.`;
+  return [
+    title,
+    "",
+    `Pools that pair with ${escapeHtml(depositSymbol)}:`,
+    ...pools.map(
+      (pool) =>
+        `• <b>${escapeHtml(pool.tokenX.symbol)}/${escapeHtml(pool.tokenY.symbol)}</b> · ${pool.binStep} bps bins · TVL ${usdCompact(pool.tvl)} · 24h fees ${usdCompact(pool.fees24h)}`,
+    ),
+    "",
+    "<i>Pick one:</i>",
+  ].join("\n");
+}
+
+export function lpRangeMessage(pool: PoolInfo, depositSymbol: string, depositIsX: boolean): string {
+  return [
+    `➕ <b>${escapeHtml(pool.tokenX.symbol)}/${escapeHtml(pool.tokenY.symbol)}</b> · ${pool.binStep} bps bins`,
+    `Price now <b>${escapeHtml(pool.activePrice)}</b> ${escapeHtml(pool.tokenY.symbol)} per ${escapeHtml(pool.tokenX.symbol)}`,
+    "",
+    `Your ${escapeHtml(depositSymbol)} goes ${depositIsX ? "at and above" : "at and below"} the current price, so it ${depositIsX ? "sells into" : "buys"} ${escapeHtml(depositIsX ? pool.tokenY.symbol : pool.tokenX.symbol)} as the price ${depositIsX ? "rises" : "falls"}.`,
+    "<i>How wide should the range be?</i>",
+  ].join("\n");
+}
+
+export function lpAmountMessage(pool: PoolInfo, deposit: TokenRef, balanceBaseUnits: string, priceRange: { low: string; high: string }, width: LpWidth): string {
+  const lines = [
+    `➕ <b>${escapeHtml(pool.tokenX.symbol)}/${escapeHtml(pool.tokenY.symbol)}</b> · ${width} bins`,
+    `Range ${escapeHtml(priceRange.low)} to ${escapeHtml(priceRange.high)}`,
+    "",
+    `Vault ${escapeHtml(deposit.symbol)} <b>${amount(balanceBaseUnits, deposit.decimals, deposit.symbol)}</b>`,
+  ];
+  lines.push(balanceBaseUnits === "0" ? "<i>The vault has no idle deposit token to add.</i>" : "<i>How much of it should the position get?</i>");
+  return lines.join("\n");
+}
 
 export function errorMessage(title: string, detail?: string): string {
   return detail ? `❌ <b>${escapeHtml(title)}</b>\n${escapeHtml(detail)}` : `❌ ${escapeHtml(title)}`;

@@ -9,7 +9,10 @@ const screens: Screen[] = [
   { kind: "strategies", vault: VAULT },
   { kind: "quotePick", vault: VAULT },
   { kind: "quoteAmount", pairId: "AbC_-012345" },
-  { kind: "quote", pairId: "AbC_-012345", percent: 100 },
+  { kind: "quote", pairId: "AbC_-012345", percent: 100, slippageBps: 300 },
+  { kind: "lpPools", vault: VAULT },
+  { kind: "lpRange", draftId: "AbC_-012345" },
+  { kind: "lpAmount", draftId: "AbC_-012345" },
   { kind: "position", refId: "AbC_-012345" },
   { kind: "confirm", actionId: "AbC_-012345" },
   { kind: "execute", actionId: "AbC_-012345" },
@@ -25,7 +28,7 @@ describe("screen callback data", () => {
   });
 
   it("rejects data no button of ours produces", () => {
-    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, "qq:AbC_-012345:33", "qq:AbC_-012345:1000", "qa:short", `vaults:${VAULT}`, "x:", "x:AbC_-0123456", "c:../etc/pass"]) {
+    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, "qq:AbC_-012345:33:50", "qq:AbC_-012345:25:75", "qq:AbC_-012345:25", "qq:AbC_-012345:1000:50", "qa:short", `vaults:${VAULT}`, "x:", "x:AbC_-0123456", "c:../etc/pass"]) {
       expect(decodeScreen(data)).toBeUndefined();
     }
   });

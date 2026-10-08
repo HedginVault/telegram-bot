@@ -1,11 +1,15 @@
 import { randomBytes } from "node:crypto";
 import { Markup } from "telegraf";
 import type { InlineKeyboardMarkup } from "telegraf/types";
-import { type PendingAction, REMOVE_BPS, type RemoveBps } from "./actions";
+import { type LiquidityAmounts, type PendingAction, REMOVE_BPS, type RemoveBps } from "./actions";
+import { LP_WIDTHS, type LpWidth, rangePrices, rangeSpanPct, singleSidedRange } from "./lp";
 import type { HedgeClient, Strategy, VaultSummary } from "@hedginvault/sdk";
 import {
   confirmMessage,
   holdingsMessage,
+  lpAmountMessage,
+  lpPoolsMessage,
+  lpRangeMessage,
   positionMessage,
   quoteAmountMessage,
   quotePickMessage,
@@ -16,7 +20,11 @@ import {
 } from "./messages";
 
 export const DEFAULT_SLIPPAGE_BPS = 50;
+// The protocol config caps swaps at 300 bps.
+export const SLIPPAGE_OPTIONS = [50, 100, 300] as const;
+export type SlippageBps = (typeof SLIPPAGE_OPTIONS)[number];
 export const AMOUNT_PERCENTS = [10, 25, 50, 100] as const;
+const ADD_PERCENTS = [25, 50, 100] as const;
 export type AmountPercent = (typeof AMOUNT_PERCENTS)[number];
 
 export interface TokenRef {
@@ -28,6 +36,13 @@ export interface TokenRef {
 export interface PositionRef {
   vault: string;
   position: string;
+}
+
+/** A new position being set up: pool first, then width. */
+export interface LpDraft {
+  vault: string;
+  lbPair: string;
+  width?: LpWidth;
 }
 
 /** A swap direction the user picked, with the vault's input-token balance when it was picked. */
@@ -45,7 +60,10 @@ export type Screen =
   | { kind: "strategies"; vault: string }
   | { kind: "quotePick"; vault: string }
   | { kind: "quoteAmount"; pairId: string }
-  | { kind: "quote"; pairId: string; percent: AmountPercent }
+  | { kind: "quote"; pairId: string; percent: AmountPercent; slippageBps: SlippageBps }
+  | { kind: "lpPools"; vault: string }
+  | { kind: "lpRange"; draftId: string }
+  | { kind: "lpAmount"; draftId: string }
   | { kind: "position"; refId: string }
   | { kind: "confirm"; actionId: string }
   /** Not rendered: the bot runs the stored action. */
@@ -98,7 +116,13 @@ export function encodeScreen(screen: Screen): string {
     case "quoteAmount":
       return `qa:${screen.pairId}`;
     case "quote":
-      return `qq:${screen.pairId}:${screen.percent}`;
+      return `qq:${screen.pairId}:${screen.percent}:${screen.slippageBps}`;
+    case "lpPools":
+      return `lp:${screen.vault}`;
+    case "lpRange":
+      return `lr:${screen.draftId}`;
+    case "lpAmount":
+      return `la:${screen.draftId}`;
     case "position":
       return `p:${screen.refId}`;
     case "confirm":
@@ -111,13 +135,13 @@ export function encodeScreen(screen: Screen): string {
 /** Callback data arrives from the client, so anything unexpected decodes to undefined. */
 export function decodeScreen(data: string): Screen | undefined {
   if (data === "vaults") return { kind: "vaults" };
-  const vaultScreen = new RegExp(`^(v|h|s|qp):${ADDRESS}$`).exec(data);
+  const vaultScreen = new RegExp(`^(v|h|s|qp|lp):${ADDRESS}$`).exec(data);
   if (vaultScreen) {
     const vault = vaultScreen[2] as string;
-    const kind = ({ v: "vault", h: "holdings", s: "strategies", qp: "quotePick" } as const)[vaultScreen[1] as "v" | "h" | "s" | "qp"];
-    return { kind, vault };
+    const kinds = { v: "vault", h: "holdings", s: "strategies", qp: "quotePick", lp: "lpPools" } as const;
+    return { kind: kinds[vaultScreen[1] as keyof typeof kinds], vault };
   }
-  const stored = new RegExp(`^(qa|p|c|x):${STORE_ID}$`).exec(data);
+  const stored = new RegExp(`^(qa|p|c|x|lr|la):${STORE_ID}$`).exec(data);
   if (stored) {
     const id = stored[2] as string;
     switch (stored[1]) {
@@ -129,12 +153,17 @@ export function decodeScreen(data: string): Screen | undefined {
         return { kind: "confirm", actionId: id };
       case "x":
         return { kind: "execute", actionId: id };
+      case "lr":
+        return { kind: "lpRange", draftId: id };
+      case "la":
+        return { kind: "lpAmount", draftId: id };
     }
   }
-  const quote = new RegExp(`^qq:${STORE_ID}:(\\d{1,3})$`).exec(data);
+  const quote = new RegExp(`^qq:${STORE_ID}:(\\d{1,3}):(\\d{1,3})$`).exec(data);
   const percent = Number(quote?.[2]);
-  if (quote && (AMOUNT_PERCENTS as readonly number[]).includes(percent)) {
-    return { kind: "quote", pairId: quote[1] as string, percent: percent as AmountPercent };
+  const slippageBps = Number(quote?.[3]);
+  if (quote && (AMOUNT_PERCENTS as readonly number[]).includes(percent) && (SLIPPAGE_OPTIONS as readonly number[]).includes(slippageBps)) {
+    return { kind: "quote", pairId: quote[1] as string, percent: percent as AmountPercent, slippageBps: slippageBps as SlippageBps };
   }
   return undefined;
 }
@@ -157,6 +186,7 @@ export interface ScreenDeps {
   pairs: IdStore<QuotePair>;
   positions: IdStore<PositionRef>;
   actions: IdStore<PendingAction>;
+  drafts: IdStore<LpDraft>;
   /** False when no manager keypair is configured; trade buttons are hidden. */
   trading: boolean;
 }
@@ -172,6 +202,17 @@ async function findVault(api: HedgeClient, address: string): Promise<VaultSummar
   if (!vault) throw new ScreenNotice("That vault is no longer in this API key's scope.");
   return vault;
 }
+
+/** Puts a deposit-token amount on its side of the pair; the other side is zero. */
+function depositSide(pair: { tokenX: TokenRef; tokenY: TokenRef }, deposit: TokenRef, amountBaseUnits: string): LiquidityAmounts | undefined {
+  const display = { amountBaseUnits, token: deposit };
+  if (pair.tokenX.mint === deposit.mint) return { amountX: amountBaseUnits, amountY: "0", display };
+  if (pair.tokenY.mint === deposit.mint) return { amountX: "0", amountY: amountBaseUnits, display };
+  return undefined;
+}
+
+const depositBalance = (holdings: { depositToken: TokenRef; tokens: { token: TokenRef; amount: string }[] }) =>
+  holdings.tokens.find((t) => t.token.mint === holdings.depositToken.mint)?.amount ?? "0";
 
 export function percentOf(baseUnits: string, percent: AmountPercent): string {
   return ((BigInt(baseUnits) * BigInt(percent)) / 100n).toString();
@@ -196,7 +237,9 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         html: vaultMessage(vault),
         keyboard: keyboard([
           [button("📊 Holdings", { kind: "holdings", vault: vault.address }), button("🧩 Strategies", { kind: "strategies", vault: vault.address })],
-          [button("💱 Quote a swap", { kind: "quotePick", vault: vault.address })],
+          deps.trading
+            ? [button("💱 Swap", { kind: "quotePick", vault: vault.address }), button("➕ New LP position", { kind: "lpPools", vault: vault.address })]
+            : [button("💱 Quote a swap", { kind: "quotePick", vault: vault.address })],
           [homeButton],
         ]),
       };
@@ -239,13 +282,92 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       if (!deps.trading) return { html: positionMessage(vault, strategy, false), keyboard: keyboard([[button("🔄 Refresh", screen), back]]) };
       const base = { vault: vault.address, position: strategy.position, pairLabel: pairLabel(strategy) };
       const removeButton = (bps: RemoveBps) => confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps });
+      const holdings = await api.getHoldings(vault.address);
+      const balance = depositBalance(holdings);
+      const addButtons = ADD_PERCENTS.flatMap((percent) => {
+        const amounts = depositSide(strategy, holdings.depositToken, percentOf(balance, percent));
+        return amounts && amounts.display.amountBaseUnits !== "0"
+          ? [confirmButton(deps, `➕ ${percent}% ${holdings.depositToken.symbol}`, { kind: "dlmmAdd", ...base, amounts })]
+          : [];
+      });
       return {
         html: positionMessage(vault, strategy, true),
         keyboard: keyboard([
           [confirmButton(deps, "💰 Claim fees", { kind: "dlmmClaim", ...base })],
+          ...(addButtons.length > 0 ? [addButtons] : []),
           REMOVE_BPS.map(removeButton),
           [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
           [button("🔄 Refresh", screen), back],
+        ]),
+      };
+    }
+    case "lpPools": {
+      const vault = await findVault(api, screen.vault);
+      const holdings = await api.getHoldings(vault.address);
+      const deposit = holdings.depositToken;
+      const { pools } = await api.searchPools(vault.address, deposit.symbol);
+      // Builders require the deposit token on one side of the pair.
+      const eligible = pools.filter((p) => p.tokenX.mint === deposit.mint || p.tokenY.mint === deposit.mint).slice(0, 6);
+      return {
+        html: lpPoolsMessage(vault, deposit.symbol, eligible),
+        keyboard: keyboard([
+          ...eligible.map((pool) => [
+            button(`${pool.tokenX.symbol}/${pool.tokenY.symbol} · ${pool.binStep} bps bins`, {
+              kind: "lpRange",
+              draftId: deps.drafts.put({ vault: vault.address, lbPair: pool.address }),
+            }),
+          ]),
+          [button("⬅️ Back", { kind: "vault", vault: vault.address })],
+        ]),
+      };
+    }
+    case "lpRange": {
+      const draft = deps.drafts.get(screen.draftId);
+      if (!draft) throw expired();
+      const vault = await findVault(api, draft.vault);
+      const [pool, holdings] = await Promise.all([api.getPool(vault.address, draft.lbPair), api.getHoldings(vault.address)]);
+      const depositIsX = pool.tokenX.mint === holdings.depositToken.mint;
+      return {
+        html: lpRangeMessage(pool, holdings.depositToken.symbol, depositIsX),
+        keyboard: keyboard([
+          LP_WIDTHS.map((width) =>
+            button(`${width} bins · ${depositIsX ? "+" : "−"}${rangeSpanPct(pool.binStep, width)}`, {
+              kind: "lpAmount",
+              draftId: deps.drafts.put({ ...draft, width }),
+            }),
+          ),
+          [button("⬅️ Pools", { kind: "lpPools", vault: vault.address })],
+        ]),
+      };
+    }
+    case "lpAmount": {
+      const draft = deps.drafts.get(screen.draftId);
+      if (!draft?.width) throw expired();
+      const vault = await findVault(api, draft.vault);
+      const [pool, holdings] = await Promise.all([api.getPool(vault.address, draft.lbPair), api.getHoldings(vault.address)]);
+      const deposit = holdings.depositToken;
+      const range = singleSidedRange(pool.activeBinId, draft.width, pool.tokenX.mint === deposit.mint);
+      const priceRange = rangePrices(Number(pool.activePrice), pool.activeBinId, pool.binStep, range);
+      const balance = depositBalance(holdings);
+      const amountButtons = AMOUNT_PERCENTS.flatMap((percent) => {
+        const amounts = depositSide(pool, deposit, percentOf(balance, percent));
+        if (!amounts || amounts.display.amountBaseUnits === "0") return [];
+        const action: PendingAction = {
+          kind: "dlmmOpen",
+          vault: vault.address,
+          lbPair: pool.lbPair,
+          pairLabel: `${pool.tokenX.symbol}/${pool.tokenY.symbol}`,
+          ...range,
+          priceRange,
+          amounts,
+        };
+        return [confirmButton(deps, `${percent}%`, action)];
+      });
+      return {
+        html: lpAmountMessage(pool, deposit, balance, priceRange, draft.width),
+        keyboard: keyboard([
+          ...(amountButtons.length > 0 ? [amountButtons] : []),
+          [button("⬅️ Range", { kind: "lpRange", draftId: deps.drafts.put({ vault: draft.vault, lbPair: draft.lbPair }) })],
         ]),
       };
     }
@@ -295,7 +417,9 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
     case "quoteAmount": {
       const pair = pairs.get(screen.pairId);
       if (!pair) throw expired();
-      const amounts = AMOUNT_PERCENTS.map((percent) => button(`${percent}%`, { kind: "quote", pairId: screen.pairId, percent }));
+      const amounts = AMOUNT_PERCENTS.map((percent) =>
+        button(`${percent}%`, { kind: "quote", pairId: screen.pairId, percent, slippageBps: DEFAULT_SLIPPAGE_BPS }),
+      );
       return {
         html: quoteAmountMessage(pair),
         keyboard: keyboard([amounts, [button("⬅️ Back", { kind: "quotePick", vault: pair.vault })]]),
@@ -305,7 +429,11 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       const pair = pairs.get(screen.pairId);
       if (!pair) throw expired();
       const amountBaseUnits = percentOf(pair.inputBalanceBaseUnits, screen.percent);
+      const slippageRow = SLIPPAGE_OPTIONS.map((slippageBps) =>
+        button(`${slippageBps === screen.slippageBps ? "✓ " : ""}${slippageBps / 100}% slippage`, { ...screen, slippageBps }),
+      );
       const navRows = [
+        slippageRow,
         [button("🔄 Refresh", screen), button("⬅️ Amount", { kind: "quoteAmount", pairId: screen.pairId })],
         [homeButton],
       ];
@@ -316,7 +444,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         inputMint: pair.input.mint,
         outputMint: pair.output.mint,
         amount: amountBaseUnits,
-        slippageBps: DEFAULT_SLIPPAGE_BPS,
+        slippageBps: screen.slippageBps,
       });
       if (!deps.trading) return { html: quoteResultMessage(pair, screen.percent, quote), keyboard: back };
       const swap: PendingAction = {
@@ -325,7 +453,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         input: pair.input,
         output: pair.output,
         amountBaseUnits,
-        slippageBps: DEFAULT_SLIPPAGE_BPS,
+        slippageBps: screen.slippageBps,
       };
       return {
         html: quoteResultMessage(pair, screen.percent, quote),
