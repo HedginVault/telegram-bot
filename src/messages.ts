@@ -1,4 +1,5 @@
 import type { Holdings, Quote, Strategy, VaultSummary } from "./api";
+import type { AmountPercent, QuotePair } from "./screens";
 import { formatBaseUnits } from "./format";
 
 // Telegram counts the limit after parsing entities, so measuring raw HTML is conservative.
@@ -39,7 +40,9 @@ const status = (value: string) => STATUS_LABEL[value] ?? `⚪ ${escapeHtml(value
 export const HELP_MESSAGE = [
   "🤖 <b>Hedge Vault manager bot</b>",
   "",
-  "<b>Read</b>",
+  "Tap <b>Vaults</b> below and use the buttons. Commands also work:",
+  "",
+  "<b>Commands</b>",
   "/vaults · vaults this API key can manage",
   "/holdings &lt;vault&gt; · what a vault holds and is worth",
   "/strategies &lt;vault&gt; · open strategies",
@@ -49,6 +52,7 @@ export const HELP_MESSAGE = [
   "• &lt;vault&gt; is a number from /vaults or an address. /holdings and /strategies also take the vault name.",
   "• &lt;amount&gt; is in base units: 1 USDC = <code>1000000</code>.",
   "• Tap an address to copy it.",
+  "• Quote buttons stop working when the bot restarts. Send /start for fresh ones.",
 ].join("\n");
 
 export function vaultsMessage(vaults: VaultSummary[]): string {
@@ -61,6 +65,17 @@ export function vaultsMessage(vaults: VaultSummary[]): string {
     ].join("\n"),
   );
   return [`🏦 <b>Your vaults</b> (${vaults.length})`, ...blocks].join("\n\n");
+}
+
+export function vaultMessage(vault: VaultSummary): string {
+  return [
+    `🏦 <b>${escapeHtml(vault.name)}</b> · ${status(vault.status)}`,
+    address(vault.address),
+    "",
+    `TVL <b>${amount(vault.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b> · ${solscan(vault.address)}`,
+    "",
+    "<i>What do you want to see?</i>",
+  ].join("\n");
 }
 
 export function holdingsMessage(vault: VaultSummary, holdings: Holdings): string {
@@ -122,6 +137,49 @@ export function quoteMessage(quote: Quote): string {
     "",
     `In  <code>${quote.inAmount}</code> base units`,
     `Out <code>${quote.outAmount}</code> base units`,
+    `Price impact ${escapeHtml(quote.priceImpactPct)}% · slippage ${quote.slippageBps} bps`,
+    `Route ${quote.routeLabels.map(escapeHtml).join(" → ") || "unknown"}`,
+    "",
+    "<i>A quote is not a promise. The trade can still fail or price differently.</i>",
+  ].join("\n");
+}
+
+export function quotePickMessage(vault: VaultSummary, depositSymbol: string, tokenCount: number): string {
+  const title = `💱 <b>${escapeHtml(vault.name)}</b> · quote a swap`;
+  if (tokenCount === 0) {
+    return [
+      title,
+      "",
+      `This vault holds only ${escapeHtml(depositSymbol)}, so there is nothing to pick here.`,
+      "<i>For any other token, type /quote with its mint address.</i>",
+    ].join("\n");
+  }
+  return [
+    title,
+    "",
+    `Every swap trades against the deposit token, ${escapeHtml(depositSymbol)}.`,
+    "<i>Pick a token the vault holds:</i>",
+  ].join("\n");
+}
+
+export function quoteAmountMessage(pair: QuotePair): string {
+  return [
+    `💱 <b>${escapeHtml(pair.input.symbol)} → ${escapeHtml(pair.output.symbol)}</b>`,
+    "",
+    `Vault balance <b>${amount(pair.inputBalanceBaseUnits, pair.input.decimals, pair.input.symbol)}</b>`,
+    "<i>How much of it should the quote use?</i>",
+  ].join("\n");
+}
+
+export function quoteResultMessage(pair: QuotePair, percent: AmountPercent, quote: Quote | undefined): string {
+  const title = `💱 <b>${escapeHtml(pair.input.symbol)} → ${escapeHtml(pair.output.symbol)}</b> · ${percent}% of balance`;
+  if (!quote) return [title, "", `The vault holds no ${escapeHtml(pair.input.symbol)} to quote.`].join("\n");
+  return [
+    title,
+    "",
+    `You give <b>${amount(quote.inAmount, pair.input.decimals, pair.input.symbol)}</b>`,
+    `You get  <b>≈ ${amount(quote.outAmount, pair.output.decimals, pair.output.symbol)}</b>`,
+    "",
     `Price impact ${escapeHtml(quote.priceImpactPct)}% · slippage ${quote.slippageBps} bps`,
     `Route ${quote.routeLabels.map(escapeHtml).join(" → ") || "unknown"}`,
     "",

@@ -6,8 +6,12 @@ import {
   escapeHtml,
   fitMessage,
   holdingsMessage,
+  quoteAmountMessage,
   quoteMessage,
+  quotePickMessage,
+  quoteResultMessage,
   strategiesMessage,
+  vaultMessage,
   vaultsMessage,
 } from "../src/messages";
 import { VAULT, holdings, quote, strategies, vaultSummary } from "./fixtures";
@@ -19,6 +23,9 @@ const hostileStrategies: Strategy[] = [
   { type: "jupiter", address: "S1", symbol: HOSTILE, decimals: 0, vaultBalance: "1" },
   { type: "unreadable", address: HOSTILE, protocol: HOSTILE, reason: HOSTILE },
 ];
+
+const hostileToken = { mint: "M", symbol: HOSTILE, decimals: 6 };
+const hostilePair = { vault: VAULT, input: hostileToken, output: hostileToken, inputBalanceBaseUnits: "1000000" };
 
 describe("messages", () => {
   it("lists vaults with a tap-to-copy address and status in words", () => {
@@ -101,6 +108,12 @@ describe("messages", () => {
       strategiesMessage(hostileVault, [...strategies, ...hostileStrategies]),
       quoteMessage({ ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
       errorMessage(HOSTILE, HOSTILE),
+      vaultMessage(hostileVault),
+      quotePickMessage(hostileVault, HOSTILE, 0),
+      quotePickMessage(hostileVault, HOSTILE, 2),
+      quoteAmountMessage(hostilePair),
+      quoteResultMessage(hostilePair, 25, { ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
+      quoteResultMessage(hostilePair, 100, undefined),
     ];
     for (const html of rendered) {
       expect(() => assertTelegramHtml(html)).not.toThrow();

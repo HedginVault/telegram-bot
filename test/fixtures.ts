@@ -1,6 +1,6 @@
 import type { Holdings, Quote, Strategy, VaultSummary } from "../src/api";
 
-export const VAULT = "Vau1t1111111111111111111111111111111111111111";
+export const VAULT = "Vau1t111111111111111111111111111111111111111";
 export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
 export const SOL = "So11111111111111111111111111111111111111112";
 

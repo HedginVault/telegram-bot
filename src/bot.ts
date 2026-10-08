@@ -1,16 +1,18 @@
-import { type Context, Telegraf } from "telegraf";
+import { type Context, Markup, Telegraf, TelegramError } from "telegraf";
+import { callbackQuery } from "telegraf/filters";
 import { ApiError, type HedgeApi, type VaultSummary } from "./api";
+import { HELP_MESSAGE, errorMessage, fitMessage, quoteMessage } from "./messages";
 import {
-  HELP_MESSAGE,
-  errorMessage,
-  fitMessage,
-  holdingsMessage,
-  quoteMessage,
-  strategiesMessage,
-  vaultsMessage,
-} from "./messages";
-
-const DEFAULT_SLIPPAGE_BPS = 50;
+  DEFAULT_SLIPPAGE_BPS,
+  type PairStore,
+  type RenderedScreen,
+  type Screen,
+  ScreenNotice,
+  createPairStore,
+  decodeScreen,
+  encodeScreen,
+  renderScreen,
+} from "./screens";
 
 
 /** An input problem the user can fix by retyping the command. */
@@ -18,7 +20,7 @@ class UsageError extends Error {}
 
 /** Plain-text description for logs. */
 export function describeError(error: unknown): string {
-  if (error instanceof UsageError) return error.message;
+  if (error instanceof UsageError || error instanceof ScreenNotice) return error.message;
   if (error instanceof ApiError) return `API error ${error.status} (${error.code}): ${error.message}`;
   if (error instanceof Error && error.name === "TimeoutError") return "The Hedge Vault API did not answer in time. Try again.";
   return "Something went wrong. Check the bot logs.";
@@ -29,8 +31,24 @@ function errorReply(error: unknown): string {
   return errorMessage(describeError(error));
 }
 
+const HTML = { parse_mode: "HTML", link_preview_options: { is_disabled: true } } as const;
+
 function replyHtml(ctx: Context, html: string) {
-  return ctx.reply(fitMessage(html), { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
+  return ctx.reply(fitMessage(html), HTML);
+}
+
+function replyScreen(ctx: Context, screen: RenderedScreen) {
+  return ctx.reply(fitMessage(screen.html), { ...HTML, reply_markup: screen.keyboard });
+}
+
+/** Button taps edit the message they belong to, so the chat stays one live panel. */
+async function editScreen(ctx: Context, screen: RenderedScreen): Promise<void> {
+  try {
+    await ctx.editMessageText(fitMessage(screen.html), { ...HTML, reply_markup: screen.keyboard });
+  } catch (error) {
+    // Refresh with unchanged data is not a failure.
+    if (!(error instanceof TelegramError && error.description.includes("message is not modified"))) throw error;
+  }
 }
 
 function args(payload: string): string[] {
@@ -48,28 +66,48 @@ async function resolveVault(api: HedgeApi, reference: string | undefined, usage:
   return vault;
 }
 
-export function createBot(options: { token: string; allowedUserIds: ReadonlySet<number>; api: HedgeApi }): Telegraf {
+export function createBot(options: {
+  token: string;
+  allowedUserIds: ReadonlySet<number>;
+  api: HedgeApi;
+  pairs?: PairStore;
+}): Telegraf {
   const { api } = options;
+  const deps = { api, pairs: options.pairs ?? createPairStore() };
+  const render = (screen: Screen) => renderScreen(screen, deps);
   const bot = new Telegraf(options.token);
 
   // Unknown users get no reply, so the bot does not confirm it exists.
   bot.use((ctx, next) => (ctx.from && options.allowedUserIds.has(ctx.from.id) ? next() : undefined));
 
-  bot.start((ctx) => replyHtml(ctx, HELP_MESSAGE));
-  bot.help((ctx) => replyHtml(ctx, HELP_MESSAGE));
-
-  bot.command("vaults", async (ctx) => {
-    await replyHtml(ctx, vaultsMessage(await api.listVaults()));
-  });
+  bot.start(async (ctx) => replyScreen(ctx, await render({ kind: "vaults" })));
+  bot.command("vaults", async (ctx) => replyScreen(ctx, await render({ kind: "vaults" })));
+  bot.help((ctx) =>
+    ctx.reply(HELP_MESSAGE, {
+      ...HTML,
+      reply_markup: Markup.inlineKeyboard([[Markup.button.callback("🏦 Vaults", encodeScreen({ kind: "vaults" }))]]).reply_markup,
+    }),
+  );
 
   bot.command("holdings", async (ctx) => {
     const vault = await resolveVault(api, ctx.payload.trim(), "/holdings <vault>");
-    await replyHtml(ctx, holdingsMessage(vault, await api.getHoldings(vault.address)));
+    await replyScreen(ctx, await render({ kind: "holdings", vault: vault.address }));
   });
 
   bot.command("strategies", async (ctx) => {
     const vault = await resolveVault(api, ctx.payload.trim(), "/strategies <vault>");
-    await replyHtml(ctx, strategiesMessage(vault, await api.getStrategies(vault.address)));
+    await replyScreen(ctx, await render({ kind: "strategies", vault: vault.address }));
+  });
+
+  bot.on(callbackQuery("data"), async (ctx) => {
+    const screen = decodeScreen(ctx.callbackQuery.data);
+    if (!screen) {
+      await ctx.answerCbQuery("Unknown button. Send /start.");
+      return;
+    }
+    // Stop the button's loading spinner right away; rendering can take a few API calls.
+    await ctx.answerCbQuery();
+    await editScreen(ctx, await render(screen));
   });
 
   bot.command("quote", async (ctx) => {
@@ -90,7 +128,7 @@ export function createBot(options: { token: string; allowedUserIds: ReadonlySet<
   });
 
   bot.catch(async (error, ctx) => {
-    if (!(error instanceof UsageError)) {
+    if (!(error instanceof UsageError || error instanceof ScreenNotice)) {
       console.error("[telegram-bot] update failed", { updateId: ctx.update.update_id, error: describeError(error) });
     }
     await replyHtml(ctx, errorReply(error)).catch(() => undefined);

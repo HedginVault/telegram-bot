@@ -3,7 +3,7 @@ import { ApiError, createHedgeApi } from "../src/api";
 import { SOL, USDC, VAULT, holdings, quote } from "./fixtures";
 
 const vault = {
-  address: "Vau1t1111111111111111111111111111111111111111",
+  address: "Vau1t111111111111111111111111111111111111111",
   name: "Demo",
   status: "active",
   depositSymbol: "USDC",
