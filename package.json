@@ -10,7 +10,8 @@
     "typecheck": "tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
-    "sdk:update": "cd ../sdk && yarn build && yarn pack --filename ../telegram-bot/vendor/hedginvault-sdk.tgz && cd ../telegram-bot && yarn upgrade @hedginvault/sdk"
+    "sdk:update": "cd ../sdk && yarn build && yarn pack --filename ../telegram-bot/vendor/hedginvault-sdk.tgz && cd ../telegram-bot && yarn upgrade @hedginvault/sdk",
+    "import-key": "tsx src/import-key.ts"
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {

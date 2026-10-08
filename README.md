@@ -40,6 +40,24 @@ manager. With it set, these buttons appear:
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
 
+### Getting the keypair file
+
+To use the wallet that already manages your vault (for example Phantom):
+
+1. In the wallet, open the account's **Show private key** and copy it.
+2. Convert it without it ever appearing on screen:
+   ```sh
+   mkdir -p ~/keys && chmod 700 ~/keys
+   pbpaste | yarn -s import-key ~/keys/manager.json
+   ```
+   The command saves an owner-only file, refuses to overwrite one, refuses paths inside this
+   repository, and prints only the public key.
+3. Clear the clipboard, check the printed public key is the vault's manager, and set
+   `MANAGER_KEYPAIR_PATH=/Users/<you>/keys/manager.json`.
+
+The program has no instruction to change a vault's authority, so this key controls the vault
+permanently. Keep the file only on the machine that runs the bot.
+
 Every action shows a confirm screen first. Then the bot builds, checks, signs, sends, and
 polls each transaction, editing one message with live progress and Solscan links.
 
