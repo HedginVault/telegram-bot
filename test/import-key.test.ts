@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Keypair } from "@solana/web3.js";
@@ -48,7 +48,13 @@ describe("writeKeyFile", () => {
     expect(JSON.parse(readFileSync(path, "utf8"))).toEqual(Array.from(keypair.secretKey));
   });
 
-  it("refuses to write inside the repository", () => {
-    expect(() => writeKeyFile(keypair, join(repo, "keys", "manager.json"), repo)).toThrow(/inside this repository/);
+  it("refuses a path inside the repository that git does not ignore", () => {
+    expect(() => writeKeyFile(keypair, join(repo, "manager.json"), repo, () => false)).toThrow(/git does not ignore it/);
+  });
+
+  it("writes inside the repository when git ignores the path", () => {
+    mkdirSync(join(repo, "keys"));
+    const path = writeKeyFile(keypair, join(repo, "keys", "manager.json"), repo, () => true);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 });

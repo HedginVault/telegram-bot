@@ -47,13 +47,14 @@ To use the wallet that already manages your vault (for example Phantom):
 1. In the wallet, open the account's **Show private key** and copy it.
 2. Convert it without it ever appearing on screen:
    ```sh
-   mkdir -p ~/keys && chmod 700 ~/keys
-   pbpaste | yarn -s import-key ~/keys/manager.json
+   mkdir -p keys && chmod 700 keys
+   pbpaste | yarn -s import-key keys/manager.json
    ```
-   The command saves an owner-only file, refuses to overwrite one, refuses paths inside this
-   repository, and prints only the public key.
+   The command saves an owner-only file and prints only the public key. It refuses to
+   overwrite a file, and inside this repository it only writes git-ignored paths (`keys/` is
+   ignored).
 3. Clear the clipboard, check the printed public key is the vault's manager, and set
-   `MANAGER_KEYPAIR_PATH=/Users/<you>/keys/manager.json`.
+   `MANAGER_KEYPAIR_PATH=keys/manager.json`.
 
 The program has no instruction to change a vault's authority, so this key controls the vault
 permanently. Keep the file only on the machine that runs the bot.

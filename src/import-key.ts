@@ -1,9 +1,10 @@
+import { execFileSync } from "node:child_process";
 import { writeFileSync } from "node:fs";
 import { relative, resolve } from "node:path";
 import { Keypair } from "@solana/web3.js";
 import bs58 from "bs58";
 
-const USAGE = "Usage: pbpaste | yarn -s import-key <output.json>   (path outside this repository)";
+const USAGE = "Usage: pbpaste | yarn -s import-key keys/manager.json   (a git-ignored path)";
 
 /**
  * Accepts a wallet export (base58, as Phantom/Solflare show it) or a Solana CLI JSON array.
@@ -26,12 +27,22 @@ export function parseSecretKey(text: string): Keypair {
   }
 }
 
-/** Writes owner-only, never overwrites, and refuses paths inside `repoRoot` so the key cannot be committed. */
-export function writeKeyFile(keypair: Keypair, outputPath: string, repoRoot: string): string {
+/** True when git would ignore `path` in `repoRoot`, so `git add -A` cannot pick the key up. */
+export function gitIgnores(repoRoot: string, path: string): boolean {
+  try {
+    execFileSync("git", ["check-ignore", "-q", path], { cwd: repoRoot, stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Writes owner-only and never overwrites. Inside `repoRoot` the path must be git-ignored so the key cannot be committed. */
+export function writeKeyFile(keypair: Keypair, outputPath: string, repoRoot: string, isIgnored = gitIgnores): string {
   const target = resolve(outputPath);
   const inside = relative(resolve(repoRoot), target);
-  if (!inside.startsWith("..") && !inside.startsWith("/")) {
-    throw new Error("Refusing to write a keypair inside this repository; choose a path such as ~/keys/manager.json");
+  if (!inside.startsWith("..") && !inside.startsWith("/") && !isIgnored(resolve(repoRoot), target)) {
+    throw new Error(`Refusing to write ${inside}: git does not ignore it, so it could be committed. Use keys/ (ignored) or a path outside the repository.`);
   }
   try {
     writeFileSync(target, JSON.stringify(Array.from(keypair.secretKey)), { mode: 0o600, flag: "wx" });
