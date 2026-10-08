@@ -6,17 +6,15 @@ import {
   escapeHtml,
   fitMessage,
   holdingsMessage,
-  lpAmountMessage,
-  lpPoolsMessage,
-  lpRangeMessage,
-  quoteAmountMessage,
-  quoteMessage,
-  quotePickMessage,
-  quoteResultMessage,
+  confirmMessage,
+  lpFormMessage,
   strategiesMessage,
+  swapFormMessage,
+  swapQuoteMessage,
   vaultMessage,
   vaultsMessage,
 } from "../src/messages";
+import type { LpForm, SwapForm } from "../src/forms";
 import { VAULT, holdings, quote, strategies, vaultSummary } from "./fixtures";
 import { assertTelegramHtml } from "./telegram-html";
 
@@ -28,7 +26,11 @@ const hostileStrategies: Strategy[] = [
 ];
 
 const hostileToken = { mint: "M", symbol: HOSTILE, decimals: 6 };
-const hostilePair = { vault: VAULT, input: hostileToken, output: hostileToken, inputBalanceBaseUnits: "1000000" };
+const hostilePool = { lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: HOSTILE };
+const hostilePicked = { ...hostileToken, mint: HOSTILE, pasted: true, verified: false };
+const hostileSwap: SwapForm = { kind: "swap", vault: VAULT, deposit: hostileToken, side: "sell", token: hostilePicked, amount: { kind: "share", bps: 2500 }, slippageBps: 50, held: [hostilePicked] };
+const hostileLp: LpForm = { kind: "lp", mode: "open", vault: VAULT, deposit: hostileToken, pool: hostilePool, shape: "bidAsk", minPrice: 1, maxPrice: 2, amountX: { kind: "exact", baseUnits: "1" } };
+const hostileLiquidity = { tokenX: hostileToken, tokenY: hostileToken, amountX: "1", amountY: "2", shape: "curve" as const };
 
 describe("messages", () => {
   it("lists vaults with a tap-to-copy address and status in words", () => {
@@ -84,11 +86,6 @@ describe("messages", () => {
     expect(strategiesMessage(vaultSummary, [])).toBe("🧩 <b>Demo</b> · strategies\n\nNo open strategies.");
   });
 
-  it("labels quote amounts as base units", () => {
-    expect(quoteMessage(quote)).toContain("In  <code>1000000</code> base units\nOut <code>6666666</code> base units");
-    expect(quoteMessage(quote)).toContain("Route Meteora DLMM → Whirlpool");
-  });
-
   it("escapes API-provided text", () => {
     expect(escapeHtml(HOSTILE)).toBe(`&lt;b&gt;&amp;"x"&lt;/b&gt;`);
     expect(errorMessage("API error 400 (Validation)", "amount <must> be & valid")).toBe(
@@ -109,18 +106,16 @@ describe("messages", () => {
       vaultsMessage([vaultSummary, hostileVault]),
       holdingsMessage(hostileVault, { ...holdings, unpriced: [HOSTILE] }),
       strategiesMessage(hostileVault, [...strategies, ...hostileStrategies]),
-      quoteMessage({ ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
       errorMessage(HOSTILE, HOSTILE),
       vaultMessage(hostileVault),
-      quotePickMessage(hostileVault, HOSTILE, 0),
-      quotePickMessage(hostileVault, HOSTILE, 2),
-      quoteAmountMessage(hostilePair),
-      quoteResultMessage(hostilePair, 25, { ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
-      quoteResultMessage(hostilePair, 100, undefined),
-      lpPoolsMessage(hostileVault, HOSTILE, [{ address: "P", name: HOSTILE, tokenX: hostileToken, tokenY: hostileToken, binStep: 10, tvl: null }]),
-      lpPoolsMessage(hostileVault, HOSTILE, []),
-      lpRangeMessage({ lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: HOSTILE }, HOSTILE, true),
-      lpAmountMessage({ lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: "1" }, hostileToken, "0", { low: HOSTILE, high: HOSTILE }, 10),
+      swapFormMessage(hostileSwap, "5"),
+      swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),
+      swapQuoteMessage(hostileSwap, { input: hostileToken, output: hostileToken }, "1", { ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
+      lpFormMessage(hostileLp, "range error " + HOSTILE, { x: "1", y: "2" }),
+      lpFormMessage({ ...hostileLp, pool: undefined, poolChoices: [{ address: "P", label: HOSTILE }] }, undefined, undefined),
+      lpFormMessage(hostileLp, { lowerBinId: 0, upperBinId: 5, binCount: 5, sides: "x", lowPrice: 1, highPrice: 2 }, undefined),
+      confirmMessage(hostileVault, { kind: "dlmmOpen", vault: VAULT, lbPair: "P", pairLabel: HOSTILE, lowerBinId: 0, upperBinId: 150, priceRange: { low: HOSTILE, high: HOSTILE }, liquidity: hostileLiquidity }),
+      confirmMessage(hostileVault, { kind: "swap", vault: VAULT, input: hostileToken, output: hostileToken, amountBaseUnits: "1", slippageBps: 50, unverified: true }, quote),
     ];
     for (const html of rendered) {
       expect(() => assertTelegramHtml(html)).not.toThrow();

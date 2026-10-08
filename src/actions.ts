@@ -1,5 +1,5 @@
-import type { ActionRequest } from "@hedginvault/sdk";
-import type { TokenRef } from "./screens";
+import type { ActionRequest, DlmmShape } from "@hedginvault/sdk";
+import type { TokenRef } from "./ui";
 
 export const REMOVE_BPS = [2500, 5000, 10_000] as const;
 export type RemoveBps = (typeof REMOVE_BPS)[number];
@@ -8,21 +8,31 @@ export const ZAP_OUT_SLIPPAGE_BPS = 100;
 // Bins the active price may move between building and landing before the add is rejected.
 export const MAX_ACTIVE_BIN_SLIPPAGE = 10;
 
-/** Liquidity amounts for one side-or-both deposit, in base units. */
-export interface LiquidityAmounts {
+/** Both sides of a liquidity deposit, in base units, with the tokens for display. */
+export interface Liquidity {
+  tokenX: TokenRef;
+  tokenY: TokenRef;
   amountX: string;
   amountY: string;
-  /** What the user sees, e.g. "1.5 USDC". */
-  display: { amountBaseUnits: string; token: TokenRef };
+  shape: DlmmShape;
 }
 
 /** A fund-moving operation the user has picked but not yet confirmed. */
 export type PendingAction =
-  | { kind: "swap"; vault: string; input: TokenRef; output: TokenRef; amountBaseUnits: string; slippageBps: number }
+  | {
+      kind: "swap";
+      vault: string;
+      input: TokenRef;
+      output: TokenRef;
+      amountBaseUnits: string;
+      slippageBps: number;
+      /** The non-deposit token is not Jupiter-verified (or unknown). */
+      unverified: boolean;
+    }
   | { kind: "dlmmClaim"; vault: string; position: string; pairLabel: string }
   | { kind: "dlmmRemove"; vault: string; position: string; pairLabel: string; bps: RemoveBps }
   | { kind: "dlmmZapOut"; vault: string; position: string; pairLabel: string; depositSymbol: string }
-  | { kind: "dlmmAdd"; vault: string; position: string; pairLabel: string; amounts: LiquidityAmounts }
+  | { kind: "dlmmAdd"; vault: string; position: string; pairLabel: string; liquidity: Liquidity }
   | {
       kind: "dlmmOpen";
       vault: string;
@@ -31,9 +41,9 @@ export type PendingAction =
       lowerBinId: number;
       /** Exclusive. */
       upperBinId: number;
-      /** Display only: token Y per token X at each end of the range. */
+      /** Display only: actual edge prices of the bin range. */
       priceRange: { low: string; high: string };
-      amounts: LiquidityAmounts;
+      liquidity: Liquidity;
     }
   | { kind: "closeStrategy"; vault: string; strategy: string; label: string };
 
@@ -61,9 +71,9 @@ export function toActionRequest(action: PendingAction): ActionRequest {
         action: "dlmm/add",
         vault: action.vault,
         position: action.position,
-        amountX: action.amounts.amountX,
-        amountY: action.amounts.amountY,
-        shape: "spot",
+        amountX: action.liquidity.amountX,
+        amountY: action.liquidity.amountY,
+        shape: action.liquidity.shape,
         maxActiveBinSlippage: MAX_ACTIVE_BIN_SLIPPAGE,
       };
     case "dlmmOpen":
@@ -73,9 +83,9 @@ export function toActionRequest(action: PendingAction): ActionRequest {
         lbPair: action.lbPair,
         lowerBinId: action.lowerBinId,
         upperBinId: action.upperBinId,
-        amountX: action.amounts.amountX,
-        amountY: action.amounts.amountY,
-        shape: "spot",
+        amountX: action.liquidity.amountX,
+        amountY: action.liquidity.amountY,
+        shape: action.liquidity.shape,
         maxActiveBinSlippage: MAX_ACTIVE_BIN_SLIPPAGE,
       };
   }

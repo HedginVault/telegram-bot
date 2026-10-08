@@ -29,6 +29,7 @@ void bot.telegram
     { command: "start", description: "Open the vault menu" },
     { command: "vaults", description: "List vaults" },
     { command: "help", description: "How to use this bot" },
+    { command: "cancel", description: "Stop typing into a form" },
   ])
   .catch((error: unknown) => console.error("[telegram-bot] setMyCommands failed", error instanceof Error ? error.message : "unknown error"));
 

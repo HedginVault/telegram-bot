@@ -32,15 +32,20 @@ Trading is off unless `MANAGER_KEYPAIR_PATH` points to a Solana CLI keypair file
 array of 64 numbers). That key must be the vault's current authority and the API key's
 manager. With it set, these buttons appear:
 
-| Where | Button | API builder |
+| Where | What you set | API builder |
 | --- | --- | --- |
-| Vault → 💱 Swap → token → amount | ⚡ Swap, with 0.5 / 1 / 3% slippage buttons | `jupiter/swap` |
-| Vault → ➕ New LP position | pool → width (10 / 30 / 69 bins) → amount | `dlmm/open`, single-sided spot on the deposit token's side of the price |
-| DLMM position | ➕ 25% / 50% / 100% of the deposit token | `dlmm/add`, spot |
+| Vault → 💱 Swap | Buy or sell · a held token or a pasted contract address · amount (`1.5`, `25%`, `max`) · slippage (0.5 / 1 / 3% or typed, up to the protocol's 3%) | `jupiter/swap` |
+| Vault → ➕ New LP position | Pool (pasted address or symbol search) · shape (Spot / Curve / Bid-Ask) · min and max price (or ±1 / 5 / 10%) · amount of each token | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
+| DLMM position → ➕ Add liquidity | Shape · amount of each token | `dlmm/add` |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
 | DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
+
+Fields you type into ask with a prompt; answer in the chat, or send `/cancel`. Prices are the
+pool's quote token per base token; the bot converts them to bins and shows the actual edge
+prices, bin count, and which tokens the range can hold. Pasted tokens that Jupiter has not
+verified are flagged on the form and the confirm screen. Token lookups need app PR #18.
 
 ### Getting the keypair file
 
@@ -75,8 +80,7 @@ Safety rules the bot enforces:
   after it, because a rebuild could execute the action twice. If it cannot tell, it says so
   and links the transaction.
 
-Opening a position reads the pool's active bin from `GET /dlmm/pools/{lbPair}` (app PR #17).
-Until that is deployed, ➕ New LP position fails at the range step with a 404.
+Opening a position reads the pool's active bin from `GET /dlmm/pools/{lbPair}` (deployed).
 
 The keypair holds real funds on mainnet. Use a dedicated demo vault with its own authority
 key and a small balance. Never commit the keypair file.
