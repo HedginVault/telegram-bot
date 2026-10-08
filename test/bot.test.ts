@@ -33,22 +33,29 @@ function setup(overrides: Partial<HedgeApi> = {}) {
   const bot = createBot({ token: "123:test", allowedUserIds: new Set([ALLOWED_USER]), api });
   bot.botInfo = { id: 1, is_bot: true, first_name: "Bot", username: "hv_test_bot", can_join_groups: false, can_read_all_group_messages: false, supports_inline_queries: false };
   const replies: string[] = [];
+  const parseModes: unknown[] = [];
   // handleUpdate builds a fresh Telegram client per update, so stub the prototype.
   vi.spyOn(Telegram.prototype, "callApi").mockImplementation(async (method, payload) => {
-    if (method === "sendMessage") replies.push((payload as { text: string }).text);
+    if (method === "sendMessage") {
+      const message = payload as { text: string; parse_mode?: string };
+      replies.push(message.text);
+      parseModes.push(message.parse_mode);
+    }
     return true as never;
   });
   const send = (text: string, fromId = ALLOWED_USER) => bot.handleUpdate(commandUpdate(fromId, text));
-  return { api, send, replies };
+  return { api, send, replies, parseModes };
 }
 
 describe("bot", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("answers /vaults for an allowed user", async () => {
-    const { send, replies } = setup();
+  it("answers /vaults for an allowed user as HTML", async () => {
+    const { send, replies, parseModes } = setup();
     await send("/vaults");
-    expect(replies).toEqual([`1. Demo (normal)\n${VAULT}\nTVL 1.5 USDC`]);
+    expect(replies).toHaveLength(1);
+    expect(replies[0]).toContain(`<b>1. Demo</b> · 🟢 normal\n<code>${VAULT}</code>`);
+    expect(parseModes).toEqual(["HTML"]);
   });
 
   it("ignores users outside the allowlist without calling the API", async () => {
@@ -66,8 +73,8 @@ describe("bot", () => {
     await send(`/strategies ${VAULT}`);
     expect(api.getHoldings).toHaveBeenCalledWith(VAULT);
     expect(api.getStrategies).toHaveBeenCalledWith(VAULT);
-    expect(replies[0]).toMatch(/^Demo holdings\nLive value: 2.5 USDC/);
-    expect(replies[1]).toMatch(/^Demo strategies\n\nSwap: 0.01 SOL/);
+    expect(replies[0]).toMatch(/^📊 <b>Demo<\/b> · holdings/);
+    expect(replies[1]).toMatch(/^🧩 <b>Demo<\/b> · strategies \(4\)/);
   });
 
   it("resolves a vault by its name, ignoring case", async () => {
@@ -81,8 +88,8 @@ describe("bot", () => {
     await send("/holdings 9");
     await send("/holdings");
     expect(replies).toEqual([
-      'No vault "9" for this API key. Send /vaults to see the list.',
-      "Usage: /holdings <vault>",
+      '❌ No vault "9" for this API key. Send /vaults to see the list.',
+      "❌ Usage: /holdings &lt;vault&gt;",
     ]);
     expect(api.getHoldings).not.toHaveBeenCalled();
   });
@@ -93,13 +100,13 @@ describe("bot", () => {
     await send(`/quote 1 ${USDC} ${SOL} 1000000 25`);
     expect(api.getQuote).toHaveBeenNthCalledWith(1, { vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "1000000", slippageBps: 50 });
     expect(api.getQuote).toHaveBeenNthCalledWith(2, { vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "1000000", slippageBps: 25 });
-    expect(replies[0]).toMatch(/^Jupiter quote \(base units\)/);
+    expect(replies[0]).toMatch(/^💱 <b>Jupiter quote<\/b>/);
   });
 
   it("rejects display-unit quote amounts before calling the API", async () => {
     const { api, send, replies } = setup();
     await send(`/quote 1 ${USDC} ${SOL} 1.5`);
-    expect(replies).toEqual(["Amount must be a whole number of base units, e.g. 1000000 for 1 USDC."]);
+    expect(replies).toEqual(["❌ Amount must be a whole number of base units, e.g. 1000000 for 1 USDC."]);
     expect(api.getQuote).not.toHaveBeenCalled();
   });
 
@@ -111,6 +118,6 @@ describe("bot", () => {
     });
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     await send("/holdings 1");
-    expect(replies).toEqual(["API error 403 (Forbidden): Manager is not the current vault authority"]);
+    expect(replies).toEqual(["❌ <b>API error 403 (Forbidden)</b>\nManager is not the current vault authority"]);
   });
 });

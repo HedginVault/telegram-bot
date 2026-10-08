@@ -1,30 +1,36 @@
-import { Telegraf } from "telegraf";
+import { type Context, Telegraf } from "telegraf";
 import { ApiError, type HedgeApi, type VaultSummary } from "./api";
-import { fitMessage, holdingsMessage, quoteMessage, strategiesMessage, vaultsMessage } from "./messages";
+import {
+  HELP_MESSAGE,
+  errorMessage,
+  fitMessage,
+  holdingsMessage,
+  quoteMessage,
+  strategiesMessage,
+  vaultsMessage,
+} from "./messages";
 
 const DEFAULT_SLIPPAGE_BPS = 50;
 
-const HELP_TEXT = [
-  "Hedge Vault manager bot",
-  "",
-  "/vaults - list the vaults this API key can manage",
-  "/holdings <vault> - what a vault holds and what it is worth",
-  "/strategies <vault> - the vault's open strategies",
-  "/quote <vault> <inputMint> <outputMint> <amount> [slippageBps] - Jupiter price quote",
-  "/help - show this message",
-  "",
-  "<vault> is a vault number from /vaults, its address, or (for /holdings and /strategies) its name.",
-  "<amount> is in base units: 1 USDC = 1000000.",
-].join("\n");
 
 /** An input problem the user can fix by retyping the command. */
 class UsageError extends Error {}
 
+/** Plain-text description for logs. */
 export function describeError(error: unknown): string {
   if (error instanceof UsageError) return error.message;
   if (error instanceof ApiError) return `API error ${error.status} (${error.code}): ${error.message}`;
   if (error instanceof Error && error.name === "TimeoutError") return "The Hedge Vault API did not answer in time. Try again.";
   return "Something went wrong. Check the bot logs.";
+}
+
+function errorReply(error: unknown): string {
+  if (error instanceof ApiError) return errorMessage(`API error ${error.status} (${error.code})`, error.message);
+  return errorMessage(describeError(error));
+}
+
+function replyHtml(ctx: Context, html: string) {
+  return ctx.reply(fitMessage(html), { parse_mode: "HTML", link_preview_options: { is_disabled: true } });
 }
 
 function args(payload: string): string[] {
@@ -49,21 +55,21 @@ export function createBot(options: { token: string; allowedUserIds: ReadonlySet<
   // Unknown users get no reply, so the bot does not confirm it exists.
   bot.use((ctx, next) => (ctx.from && options.allowedUserIds.has(ctx.from.id) ? next() : undefined));
 
-  bot.start((ctx) => ctx.reply(HELP_TEXT));
-  bot.help((ctx) => ctx.reply(HELP_TEXT));
+  bot.start((ctx) => replyHtml(ctx, HELP_MESSAGE));
+  bot.help((ctx) => replyHtml(ctx, HELP_MESSAGE));
 
   bot.command("vaults", async (ctx) => {
-    await ctx.reply(fitMessage(vaultsMessage(await api.listVaults())));
+    await replyHtml(ctx, vaultsMessage(await api.listVaults()));
   });
 
   bot.command("holdings", async (ctx) => {
     const vault = await resolveVault(api, ctx.payload.trim(), "/holdings <vault>");
-    await ctx.reply(fitMessage(holdingsMessage(vault, await api.getHoldings(vault.address))));
+    await replyHtml(ctx, holdingsMessage(vault, await api.getHoldings(vault.address)));
   });
 
   bot.command("strategies", async (ctx) => {
     const vault = await resolveVault(api, ctx.payload.trim(), "/strategies <vault>");
-    await ctx.reply(fitMessage(strategiesMessage(vault, await api.getStrategies(vault.address))));
+    await replyHtml(ctx, strategiesMessage(vault, await api.getStrategies(vault.address)));
   });
 
   bot.command("quote", async (ctx) => {
@@ -80,14 +86,14 @@ export function createBot(options: { token: string; allowedUserIds: ReadonlySet<
       amountBaseUnits,
       slippageBps: slippage === undefined ? DEFAULT_SLIPPAGE_BPS : Number(slippage),
     });
-    await ctx.reply(fitMessage(quoteMessage(quote)));
+    await replyHtml(ctx, quoteMessage(quote));
   });
 
   bot.catch(async (error, ctx) => {
     if (!(error instanceof UsageError)) {
       console.error("[telegram-bot] update failed", { updateId: ctx.update.update_id, error: describeError(error) });
     }
-    await ctx.reply(describeError(error)).catch(() => undefined);
+    await replyHtml(ctx, errorReply(error)).catch(() => undefined);
   });
 
   return bot;
