@@ -1,21 +1,49 @@
 import { Telegraf } from "telegraf";
-import { ApiError, type HedgeApi } from "./api";
-import { formatBaseUnits, shortAddress } from "./format";
+import { ApiError, type HedgeApi, type VaultSummary } from "./api";
+import { fitMessage, holdingsMessage, quoteMessage, strategiesMessage, vaultsMessage } from "./messages";
+
+const DEFAULT_SLIPPAGE_BPS = 50;
 
 const HELP_TEXT = [
   "Hedge Vault manager bot",
   "",
   "/vaults - list the vaults this API key can manage",
+  "/holdings <vault> - what a vault holds and what it is worth",
+  "/strategies <vault> - the vault's open strategies",
+  "/quote <vault> <inputMint> <outputMint> <amount> [slippageBps] - Jupiter price quote",
   "/help - show this message",
+  "",
+  "<vault> is a vault number from /vaults, its address, or (for /holdings and /strategies) its name.",
+  "<amount> is in base units: 1 USDC = 1000000.",
 ].join("\n");
 
+/** An input problem the user can fix by retyping the command. */
+class UsageError extends Error {}
+
 export function describeError(error: unknown): string {
+  if (error instanceof UsageError) return error.message;
   if (error instanceof ApiError) return `API error ${error.status} (${error.code}): ${error.message}`;
   if (error instanceof Error && error.name === "TimeoutError") return "The Hedge Vault API did not answer in time. Try again.";
   return "Something went wrong. Check the bot logs.";
 }
 
+function args(payload: string): string[] {
+  return payload.split(/\s+/).filter(Boolean);
+}
+
+/** Small numbers pick from /vaults; otherwise match an address exactly or a name ignoring case. */
+async function resolveVault(api: HedgeApi, reference: string | undefined, usage: string): Promise<VaultSummary> {
+  if (!reference) throw new UsageError(`Usage: ${usage}`);
+  const vaults = await api.listVaults();
+  const vault = /^\d{1,3}$/.test(reference)
+    ? vaults[Number(reference) - 1]
+    : vaults.find((v) => v.address === reference || v.name.toLowerCase() === reference.toLowerCase());
+  if (!vault) throw new UsageError(`No vault "${reference}" for this API key. Send /vaults to see the list.`);
+  return vault;
+}
+
 export function createBot(options: { token: string; allowedUserIds: ReadonlySet<number>; api: HedgeApi }): Telegraf {
+  const { api } = options;
   const bot = new Telegraf(options.token);
 
   // Unknown users get no reply, so the bot does not confirm it exists.
@@ -25,20 +53,40 @@ export function createBot(options: { token: string; allowedUserIds: ReadonlySet<
   bot.help((ctx) => ctx.reply(HELP_TEXT));
 
   bot.command("vaults", async (ctx) => {
-    const vaults = await options.api.listVaults();
-    if (vaults.length === 0) {
-      await ctx.reply("This API key has no vaults in scope.");
-      return;
-    }
-    const lines = vaults.map(
-      (vault) =>
-        `${vault.name} (${vault.status})\n  ${shortAddress(vault.address)}\n  TVL ${formatBaseUnits(vault.totalAssets, vault.depositDecimals)} ${vault.depositSymbol}`,
-    );
-    await ctx.reply(lines.join("\n\n"));
+    await ctx.reply(fitMessage(vaultsMessage(await api.listVaults())));
+  });
+
+  bot.command("holdings", async (ctx) => {
+    const vault = await resolveVault(api, ctx.payload.trim(), "/holdings <vault>");
+    await ctx.reply(fitMessage(holdingsMessage(vault, await api.getHoldings(vault.address))));
+  });
+
+  bot.command("strategies", async (ctx) => {
+    const vault = await resolveVault(api, ctx.payload.trim(), "/strategies <vault>");
+    await ctx.reply(fitMessage(strategiesMessage(vault, await api.getStrategies(vault.address))));
+  });
+
+  bot.command("quote", async (ctx) => {
+    const usage = "/quote <vault> <inputMint> <outputMint> <amount> [slippageBps]";
+    const [vaultRef, inputMint, outputMint, amountBaseUnits, slippage] = args(ctx.payload);
+    if (!inputMint || !outputMint || !amountBaseUnits) throw new UsageError(`Usage: ${usage}`);
+    if (!/^\d+$/.test(amountBaseUnits)) throw new UsageError("Amount must be a whole number of base units, e.g. 1000000 for 1 USDC.");
+    if (slippage !== undefined && !/^\d{1,5}$/.test(slippage)) throw new UsageError("slippageBps must be a whole number, e.g. 50 for 0.5%.");
+    const vault = await resolveVault(api, vaultRef, usage);
+    const quote = await api.getQuote({
+      vault: vault.address,
+      inputMint,
+      outputMint,
+      amountBaseUnits,
+      slippageBps: slippage === undefined ? DEFAULT_SLIPPAGE_BPS : Number(slippage),
+    });
+    await ctx.reply(fitMessage(quoteMessage(quote)));
   });
 
   bot.catch(async (error, ctx) => {
-    console.error("[telegram-bot] update failed", { updateId: ctx.update.update_id, error: describeError(error) });
+    if (!(error instanceof UsageError)) {
+      console.error("[telegram-bot] update failed", { updateId: ctx.update.update_id, error: describeError(error) });
+    }
     await ctx.reply(describeError(error)).catch(() => undefined);
   });
 

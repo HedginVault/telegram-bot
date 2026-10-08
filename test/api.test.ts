@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { ApiError, createHedgeApi } from "../src/api";
+import { SOL, USDC, VAULT, holdings, quote } from "./fixtures";
 
 const vault = {
   address: "Vau1t1111111111111111111111111111111111111111",
@@ -36,5 +37,25 @@ describe("createHedgeApi", () => {
   it("flags a success body that breaks the contract", async () => {
     const api = createHedgeApi({ baseUrl: "https://example.test", apiKey: "k", fetch: stubFetch(200, { vaults: [{ ...vault, totalAssets: 1.5 }] }) });
     await expect(api.listVaults()).rejects.toMatchObject({ code: "contract_mismatch" });
+  });
+
+  it("reads holdings from the vault-scoped path", async () => {
+    const fetch = stubFetch(200, { vault: VAULT, data: holdings });
+    const api = createHedgeApi({ baseUrl: "https://example.test", apiKey: "k", fetch });
+    expect(await api.getHoldings(VAULT)).toEqual(holdings);
+    expect(fetch).toHaveBeenCalledWith(`https://example.test/api/external/v1/vaults/${VAULT}/holdings`, expect.anything());
+  });
+  it("sends quote parameters as query strings", async () => {
+    const fetch = stubFetch(200, { vault: VAULT, data: quote });
+    const api = createHedgeApi({ baseUrl: "https://example.test", apiKey: "k", fetch });
+    expect(await api.getQuote({ vault: VAULT, inputMint: USDC, outputMint: SOL, amountBaseUnits: "1000000", slippageBps: 50 })).toEqual(quote);
+    expect(fetch).toHaveBeenCalledWith(
+      `https://example.test/api/external/v1/jupiter/quote?vault=${VAULT}&inputMint=${USDC}&outputMint=${SOL}&amount=1000000&slippageBps=50`,
+      expect.anything(),
+    );
+  });
+  it("rejects a strategy type the contract does not know", async () => {
+    const api = createHedgeApi({ baseUrl: "https://example.test", apiKey: "k", fetch: stubFetch(200, { vault: VAULT, data: [{ type: "mystery", address: "x" }] }) });
+    await expect(api.getStrategies(VAULT)).rejects.toMatchObject({ code: "contract_mismatch" });
   });
 });

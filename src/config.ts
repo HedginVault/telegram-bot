@@ -34,7 +34,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   return {
     telegramBotToken: parsed.data.TELEGRAM_BOT_TOKEN,
     allowedUserIds: parsed.data.ALLOWED_TELEGRAM_USER_IDS,
-    apiBaseUrl: parsed.data.HEDGE_API_BASE_URL.replace(/\/+$/, ""),
+    // Accept both the site origin and the docs' "Base URL" (origin + /api/external/v1).
+    apiBaseUrl: parsed.data.HEDGE_API_BASE_URL.replace(/\/+$/, "").replace(/\/api\/external\/v1$/, ""),
     apiKey: parsed.data.HEDGE_API_KEY,
   };
 }

@@ -8,10 +8,22 @@ Hedge Vault vaults through the manager bot API (`/api/external/v1`). It serves t
 
 The API contract lives in `app/docs/manager-api.md` in the sibling `app/` repository.
 
-## Current scope
+## Commands
 
-Read-only scaffold. `/vaults` lists the vaults the API key can manage. The bot holds no
-Solana signing key yet, so it cannot move funds.
+Read-only. The bot holds no Solana signing key, so it cannot move funds.
+
+| Command | What it shows |
+| --- | --- |
+| `/vaults` | Numbered list of vaults the API key can manage |
+| `/holdings <vault>` | Live value, last NAV, and per-token exposure |
+| `/strategies <vault>` | Open Jupiter, Meteora DLMM, and Phoenix strategies |
+| `/quote <vault> <inputMint> <outputMint> <amount> [slippageBps]` | Jupiter quote; one mint must be the vault deposit mint |
+
+`<vault>` is a vault address or its number from `/vaults`. `<amount>` is in base units
+(1 USDC = `1000000`). Slippage defaults to 50 bps.
+
+API responses are checked against the documented V1 contract. A response that does not
+match is reported as `contract_mismatch` instead of being shown half-parsed.
 
 ## Setup
 

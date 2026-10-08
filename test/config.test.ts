@@ -16,6 +16,10 @@ describe("loadConfig", () => {
   it("strips trailing slashes from the API origin", () => {
     expect(loadConfig({ ...validEnv, HEDGE_API_BASE_URL: "http://localhost:3000/" }).apiBaseUrl).toBe("http://localhost:3000");
   });
+  it("accepts the docs' base URL that already includes the API path", () => {
+    expect(loadConfig({ ...validEnv, HEDGE_API_BASE_URL: "https://hedgin.xyz/api/external/v1" }).apiBaseUrl).toBe("https://hedgin.xyz");
+    expect(loadConfig({ ...validEnv, HEDGE_API_BASE_URL: "https://hedgin.xyz/api/external/v1/" }).apiBaseUrl).toBe("https://hedgin.xyz");
+  });
   it("rejects non-numeric user IDs", () => {
     expect(() => loadConfig({ ...validEnv, ALLOWED_TELEGRAM_USER_IDS: "111,@alice" })).toThrow(/ALLOWED_TELEGRAM_USER_IDS/);
   });
