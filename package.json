@@ -1,0 +1,25 @@
+{
+  "name": "hedge-vault-telegram-bot",
+  "version": "0.1.0",
+  "private": true,
+  "license": "ISC",
+  "scripts": {
+    "dev": "tsx watch --env-file=.env src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node --env-file=.env dist/src/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "packageManager": "yarn@1.22.22",
+  "dependencies": {
+    "telegraf": "^4",
+    "zod": "^3.23"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "tsx": "^4",
+    "typescript": "^5",
+    "vitest": "^3"
+  }
+}
