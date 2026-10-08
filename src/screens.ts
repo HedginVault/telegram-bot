@@ -1,7 +1,31 @@
-import type { HedgeClient, Strategy, VaultSummary } from "@hedginvault/sdk";
-import { type PendingAction, REMOVE_BPS, type RemoveBps } from "./actions";
-import { type Form, type FormDeps, createLpForm, createSwapForm, renderForm, renderSwapQuote } from "./forms";
-import { confirmMessage, holdingsMessage, positionMessage, strategiesMessage, vaultMessage, vaultsMessage } from "./messages";
+import type { HedgeClient, Strategy, VaultStatus, VaultSummary } from "@hedginvault/sdk";
+import { type PendingAction, REMOVE_BPS, type RemoveBps, actionVault } from "./actions";
+import {
+  type Form,
+  type FormDeps,
+  createLpForm,
+  createOrderForm,
+  createPhoenixTransferForm,
+  createSwapForm,
+  createTrackForm,
+  createVaultForm,
+  renderForm,
+  renderSwapQuote,
+} from "./forms";
+import {
+  STRATEGY_HISTORY_LIMIT,
+  confirmMessage,
+  holdingsMessage,
+  navHistoryMessage,
+  phoenixMessage,
+  positionMessage,
+  requestsMessage,
+  settingsMessage,
+  strategiesMessage,
+  strategyHistoryMessage,
+  vaultMessage,
+  vaultsMessage,
+} from "./messages";
 import {
   type Button,
   type IdStore,
@@ -25,6 +49,12 @@ const confirmButton = (deps: ScreenDeps, text: string, action: PendingAction) =>
   button(text, { kind: "confirm", actionId: deps.actions.put(action) });
 
 type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
+export const NAV_HISTORY_LIMIT = 10;
+const STATUS_BUTTONS: { status: VaultStatus; text: string }[] = [
+  { status: "normal", text: "🟢 Normal" },
+  { status: "reduceOnly", text: "🟡 Reduce-only" },
+  { status: "paused", text: "🔴 Paused" },
+];
 const pairLabel = (s: DlmmStrategy) => `${s.tokenX.symbol}/${s.tokenY.symbol}`;
 
 async function findVault(api: HedgeClient, address: string): Promise<VaultSummary> {
@@ -51,20 +81,98 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         html: vaultsMessage(vaults),
         keyboard: keyboard([
           ...vaults.map((vault, index) => [button(`${index + 1}. ${vault.name}`, { kind: "vault", vault: vault.address })]),
+          [button("✨ Create vault", { kind: "newVault" })],
           [button("🔄 Refresh", screen), walletButton()],
         ]),
       };
     }
     case "vault": {
       const vault = await findVault(api, screen.vault);
+      const to = (text: string, kind: Extract<Screen, { vault: string }>["kind"]) => button(text, { kind, vault: vault.address });
       return {
         html: vaultMessage(vault),
         keyboard: keyboard([
-          [button("📊 Holdings", { kind: "holdings", vault: vault.address }), button("🧩 Strategies", { kind: "strategies", vault: vault.address })],
-          [button("💱 Swap", { kind: "newSwap", vault: vault.address }), button("➕ New LP position", { kind: "newLp", vault: vault.address })],
-          [homeButton()],
+          [to("📊 Holdings", "holdings"), to("🧩 Strategies", "strategies")],
+          [to("💱 Swap", "newSwap"), to("➕ New LP position", "newLp")],
+          [to("📊 NAV history", "navHistory"), to("📋 Requests", "requests")],
+          [to("🗂 Strategy history", "strategyHistory"), to("📈 Phoenix", "phoenix")],
+          [to("⚙️ Settings", "settings"), homeButton()],
         ]),
       };
+    }
+    case "navHistory":
+    case "requests":
+    case "strategyHistory": {
+      const vault = await findVault(api, screen.vault);
+      const html =
+        screen.kind === "navHistory"
+          ? navHistoryMessage(vault, (await api.getNavHistory(vault.address, NAV_HISTORY_LIMIT)).slice(-NAV_HISTORY_LIMIT))
+          : screen.kind === "requests"
+            ? requestsMessage(vault, await api.getRequests(vault.address))
+            : strategyHistoryMessage(vault, (await api.getStrategyHistory(vault.address)).slice(0, STRATEGY_HISTORY_LIMIT));
+      return { html, keyboard: keyboard([[button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })], [homeButton()]]) };
+    }
+    case "settings": {
+      const vault = await findVault(api, screen.vault);
+      const detail = await api.getVault(vault.address);
+      const deposit = { mint: detail.depositMint, symbol: detail.depositSymbol, decimals: detail.depositDecimals };
+      const update = (text: string, changes: Extract<PendingAction, { kind: "vaultUpdate" }>["changes"]) =>
+        confirmButton(deps, text, { kind: "vaultUpdate", vault: vault.address, deposit, changes });
+      return {
+        html: settingsMessage(detail),
+        keyboard: keyboard([
+          [
+            update(detail.depositPaused ? "▶️ Resume deposits" : "⏸ Pause deposits", { depositPaused: !detail.depositPaused }),
+            update(detail.withdrawalPaused ? "▶️ Resume withdrawals" : "⏸ Pause withdrawals", { withdrawalPaused: !detail.withdrawalPaused }),
+          ],
+          STATUS_BUTTONS.filter((b) => b.status !== detail.status).map((b) => update(b.text, { status: b.status })),
+          [button("✏️ Edit fees and limits", { kind: "editSettings", vault: vault.address })],
+          [
+            confirmButton(deps, "💰 Claim manager fee", { kind: "vaultClaimFee", vault: vault.address }),
+            confirmButton(deps, "🗑 Close vault", { kind: "vaultClose", vault: vault.address }),
+          ],
+          [button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })],
+        ]),
+      };
+    }
+    case "editSettings": {
+      const vault = await findVault(api, screen.vault);
+      return renderForm(deps.forms.put(await createVaultForm(api, vault.address)), deps);
+    }
+    case "newVault":
+      return renderForm(deps.forms.put(await createVaultForm(api)), deps);
+    case "phoenix": {
+      const vault = await findVault(api, screen.vault);
+      const phoenix = await api.getPhoenix(vault.address);
+      const rows: Button[][] = [];
+      if (phoenix.usdcVault && phoenix.status === "none") {
+        rows.push([confirmButton(deps, "🚀 Set up Phoenix", { kind: "phoenixInit", vault: vault.address })]);
+      } else if (phoenix.usdcVault && phoenix.status === "registered") {
+        rows.push([confirmButton(deps, "🤝 Onboard trader", { kind: "phoenixOnboard", vault: vault.address })]);
+      } else if (phoenix.usdcVault && phoenix.status === "ready") {
+        rows.push(
+          [button("💵 Deposit USDC", { kind: "phoenixDeposit", vault: vault.address }), button("📤 Withdraw", { kind: "phoenixWithdraw", vault: vault.address })],
+          [button("🆕 New order", { kind: "newOrder", vault: vault.address }), confirmButton(deps, "🧹 Sweep", { kind: "phoenixSweep", vault: vault.address })],
+        );
+        const symbols = [...new Set((phoenix.openOrders ?? []).map((order) => order.symbol))];
+        for (const symbol of symbols) rows.push([confirmButton(deps, `✖️ Cancel all ${symbol} orders`, { kind: "phoenixCancel", vault: vault.address, symbol })]);
+      }
+      rows.push([button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })]);
+      return { html: phoenixMessage(vault, phoenix), keyboard: keyboard(rows) };
+    }
+    case "phoenixDeposit":
+    case "phoenixWithdraw": {
+      const vault = await findVault(api, screen.vault);
+      const direction = screen.kind === "phoenixDeposit" ? "deposit" : "withdraw";
+      return renderForm(deps.forms.put(await createPhoenixTransferForm(api, vault.address, direction)), deps);
+    }
+    case "newOrder": {
+      const vault = await findVault(api, screen.vault);
+      return renderForm(deps.forms.put(await createOrderForm(api, vault.address)), deps);
+    }
+    case "trackToken": {
+      const vault = await findVault(api, screen.vault);
+      return renderForm(deps.forms.put(await createTrackForm(api, vault.address)), deps);
     }
     case "holdings": {
       const vault = await findVault(api, screen.vault);
@@ -89,7 +197,12 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       });
       return {
         html: strategiesMessage(vault, strategies),
-        keyboard: keyboard([...rows, [button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })], [homeButton()]]),
+        keyboard: keyboard([
+          ...rows,
+          [button("➕ Track token", { kind: "trackToken", vault: vault.address })],
+          [button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })],
+          [homeButton()],
+        ]),
       };
     }
     case "position": {
@@ -102,6 +215,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       rows.push(
         REMOVE_BPS.map(removeButton),
         [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
+        [confirmButton(deps, "🗑 Close position", { kind: "dlmmClose", ...base })],
         [button("🔄 Refresh", screen), back],
       );
       return { html: positionMessage(vault, strategy), keyboard: keyboard(rows) };
@@ -126,7 +240,8 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
     case "confirm": {
       const action = deps.actions.get(screen.actionId);
       if (!action) throw expired();
-      const vault = await findVault(api, action.vault);
+      const vaultAddress = actionVault(action);
+      const vault = vaultAddress === undefined ? undefined : await findVault(api, vaultAddress);
       const freshQuote =
         action.kind === "swap"
           ? await api.getQuote({
@@ -141,7 +256,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         html: confirmMessage(vault, action, freshQuote),
         keyboard: keyboard([
           [button("✅ Confirm and send", { kind: "execute", actionId: screen.actionId })],
-          [button("✖️ Cancel", { kind: "vault", vault: vault.address })],
+          [vault ? button("✖️ Cancel", { kind: "vault", vault: vault.address }) : button("✖️ Cancel", { kind: "vaults" })],
         ]),
       };
     }

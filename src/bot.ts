@@ -1,7 +1,7 @@
 import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary, keypairSigner } from "@hedginvault/sdk";
 import { type Context, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery, message } from "telegraf/filters";
-import { type PendingAction, toActionRequest } from "./actions";
+import { type PendingAction, actionScope, actionVault, executeAction } from "./actions";
 import { InputError, applyFormOp, applyFormText } from "./forms";
 import { HELP_MESSAGE, errorHint, errorMessage, executionMessage, fitMessage } from "./messages";
 import { type ScreenDeps, renderScreen } from "./screens";
@@ -25,7 +25,8 @@ const isUserFacing = (error: unknown) =>
 
 function errorReply(error: unknown): string {
   if (error instanceof ApiError) {
-    const hint = errorHint(error.code);
+    // Screens and commands only read, so a missing scope here is "read".
+    const hint = errorHint(error.code, error.message, "read");
     return errorMessage(`API error ${error.status} (${error.code})`, hint ? `${error.message}\n${hint}` : error.message);
   }
   return errorMessage(describeError(error));
@@ -153,19 +154,30 @@ export function createBot(options: {
     const { signer } = session;
     const { api } = session.deps;
     const progress: Progress[] = [];
-    const done = keyboard([[button("⬅️ Vault", { kind: "vault", vault: action.vault }), button("🏦 Vaults", { kind: "vaults" })]]);
+    const vault = actionVault(action);
+    const scope = actionScope(action);
+    const done = (outcome: Outcome) => {
+      const created = outcome.kind === "confirmed" ? outcome.created?.vault : undefined;
+      return keyboard([
+        [
+          ...(created ? [button("🏦 Open new vault", { kind: "vault", vault: created })] : []),
+          ...(vault ? [button("⬅️ Vault", { kind: "vault", vault })] : []),
+          button("🏦 Vaults", { kind: "vaults" }),
+        ],
+      ]);
+    };
     const show = (outcome?: Outcome) =>
-      editScreen(ctx, { html: executionMessage(action, progress, outcome), keyboard: outcome ? done : { inline_keyboard: [] } });
+      editScreen(ctx, { html: executionMessage(action, progress, outcome, scope), keyboard: outcome ? done(outcome) : { inline_keyboard: [] } });
     try {
       await show();
-      const outcome = await api.execute(toActionRequest(action), signer, {
+      const outcome = await executeAction(api, action, signer, {
         onProgress: async (step) => {
           progress.push(step);
           // A failed progress edit must not interrupt a transaction that is already in flight.
           await show().catch(() => undefined);
         },
       });
-      console.info("[telegram-bot] action finished", { action: action.kind, vault: action.vault, outcome: outcome.kind, signatures: outcome.signatures });
+      console.info("[telegram-bot] action finished", { action: action.kind, vault, outcome: outcome.kind, signatures: outcome.signatures });
       await show(outcome);
     } catch (error) {
       console.error("[telegram-bot] action crashed", { action: action.kind, error: describeError(error) });
@@ -210,7 +222,16 @@ export function createBot(options: {
     await ctx.reply(wasTyping ? "Cancelled. The form keeps its other values." : "Nothing to cancel.");
   });
 
-  for (const [command, kind] of [["holdings", "holdings"], ["strategies", "strategies"]] as const) {
+  const vaultCommands = [
+    ["holdings", "holdings"],
+    ["strategies", "strategies"],
+    ["nav", "navHistory"],
+    ["requests", "requests"],
+    ["history", "strategyHistory"],
+    ["phoenix", "phoenix"],
+    ["settings", "settings"],
+  ] as const;
+  for (const [command, kind] of vaultCommands) {
     bot.command(command, async (ctx) => {
       const session = sessionOf(ctx.from.id);
       if (!session) return replyScreen(ctx, walletMenu(ctx.from.id));

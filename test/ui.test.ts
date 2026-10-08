@@ -15,10 +15,36 @@ const ops: FormOp[] = [
   { op: "ask", field: "amountY" },
   { op: "token", index: 3 },
   { op: "pool", index: 5 },
+  { op: "empty" },
+  { op: "market", index: 15 },
+  { op: "orderType" },
+  { op: "postOnly" },
+  { op: "reduceOnly" },
+  { op: "usdc" },
+  { op: "ask", field: "minWithdrawalShares" },
 ];
 const screens: Screen[] = [
   { kind: "vaults" },
-  ...(["vault", "holdings", "strategies", "newSwap", "newLp"] as const).map((kind) => ({ kind, vault: VAULT })),
+  { kind: "newVault" },
+  ...(
+    [
+      "vault",
+      "holdings",
+      "strategies",
+      "newSwap",
+      "newLp",
+      "navHistory",
+      "requests",
+      "strategyHistory",
+      "settings",
+      "editSettings",
+      "phoenix",
+      "phoenixDeposit",
+      "phoenixWithdraw",
+      "newOrder",
+      "trackToken",
+    ] as const
+  ).map((kind) => ({ kind, vault: VAULT })),
   { kind: "position", refId: ID },
   { kind: "addLp", refId: ID },
   { kind: "form", formId: ID },
@@ -38,7 +64,7 @@ describe("screen callback data", () => {
   });
 
   it("rejects data no button of ours produces", () => {
-    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, `o:${ID}:sl0`, `o:${ID}:sl99999`, `o:${ID}:ask99`, `o:${ID}:hack`, `f:${ID}x`, "c:../etc/pass", `vaults:${VAULT}`]) {
+    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, `o:${ID}:sl0`, `o:${ID}:sl99999`, `o:${ID}:ask99`, `o:${ID}:hack`, `o:${ID}:mk16`, `f:${ID}x`, "c:../etc/pass", `vaults:${VAULT}`]) {
       expect(decodeScreen(data)).toBeUndefined();
     }
   });

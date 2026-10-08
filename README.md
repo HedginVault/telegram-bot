@@ -50,8 +50,15 @@ commands below also work.
 | `/vaults` | Numbered list of vaults the active wallet manages |
 | `/holdings <vault>` | Live value, last NAV, and per-token exposure |
 | `/strategies <vault>` | Open Jupiter, Meteora DLMM, and Phoenix strategies |
+| `/nav <vault>` | The last 10 posted NAVs, newest first, with admin overrides flagged |
+| `/requests <vault>` | Queued deposits and withdrawals, and whether each can settle yet |
+| `/history <vault>` | The last 10 closed strategies with realized PnL per token |
+| `/phoenix <vault>` | Phoenix perps: setup step, margin, positions, open orders |
+| `/settings <vault>` | Fees, limits, status, pause flags, pending totals |
 
-`<vault>` is a vault address or its number from `/vaults`.
+`<vault>` is a vault address or its number from `/vaults`. The vault screen has a button for
+each of these. History reads fail with `HistoryUnavailable` on a server without a history
+database.
 
 API responses are checked against the documented V1 contract. A response that does not
 match is reported as `contract_mismatch` instead of being shown half-parsed.
@@ -66,7 +73,23 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
 | DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
+| DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
+| Vault → ➕ New LP position | Pool · min and max price (up to 70 bins) · 🫙 Empty position only | `dlmm/initialize` |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
+| Strategies → ➕ Track token | A pasted contract address (Jupiter verification shown) | `jupiter/initialize` |
+| Vault → 📈 Phoenix | 🚀 Set up Phoenix (shown when the vault has no Phoenix strategy) | `phoenix/initialize` |
+| Vault → 📈 Phoenix | 🤝 Onboard trader (shown after setup) | `onboardPhoenix` (`phoenix/onboard`) |
+| Vault → 📈 Phoenix | 💵 Deposit USDC · 📤 Withdraw: amount (`1.5`, `25%`, `max`) | `phoenix/deposit`, `phoenix/withdraw` |
+| Vault → 📈 Phoenix → 🆕 New order | Market (button or typed symbol) · long or short · size (`0.5`) · market with slippage (0.5 / 1 / 3% or typed, up to 20%) or limit with price and post-only · reduce-only | `phoenix/order` |
+| Vault → 📈 Phoenix | ✖️ Cancel all orders on one market · 🧹 Sweep a queued withdrawal | `phoenix/cancel` (`orders: "all"`), `phoenix/sweep` |
+| Vault → ⚙️ Settings | ⏸/▶️ deposits or withdrawals · status Normal / Reduce-only / Paused | `vault/update` (one field) |
+| Vault → ⚙️ Settings → ✏️ Edit fees and limits | Fees in % · deposit cap (or `none`) · min deposit · min withdrawal shares | `vault/update` (only the changed fields) |
+| Vault → ⚙️ Settings | 💰 Claim manager fee · 🗑 Close vault | `vault/claim-fee`, `vault/close` |
+| Vaults → ✨ Create vault | Name (at most 32 bytes) · deposit token (USDC, or a pasted mint) · fees in % · cap · min deposit · min withdrawal shares | `vault/initialize`; the new address comes back as `created.vault` |
+
+Pausing the vault, closing it, and closing a DLMM position show a plain-words warning on the
+confirm screen. A pasted deposit mint is looked up through a vault the key already manages, so a
+manager's first vault must use USDC.
 
 Fields you type into ask with a prompt; answer in the chat, or send `/cancel`. Prices are the
 pool's quote token per base token; the bot converts them to bins and shows the actual edge
@@ -82,6 +105,8 @@ Safety rules the bot enforces:
   key, already signed by any other required signer, and call only the Hedge Vault program,
   ComputeBudget, Associated Token Account, Meteora DLMM, or Jupiter at the top level. The
   priority fee is capped at 100,000 microLamports per CU. Anything else is refused unsigned.
+  Phoenix onboarding is the one exception, checked by the SDK's narrower policy: a single
+  transaction that calls only the Phoenix program and that Phoenix co-signs on submit.
 - **One shot.** A confirm button works once. Only one action per user runs at a time.
 - **No blind retries.** An ambiguous send is polled by its receipt. The bot never rebuilds
   after it, because a rebuild could execute the action twice. If it cannot tell, it says so
@@ -110,6 +135,26 @@ The API checker moved to the SDK: run `hedge-check-api` there.
    `HEDGE_PROGRAM_ID`, and `ALLOWED_TELEGRAM_USER_IDS`.
 3. Managers get their API keys from an admin (dashboard, with the `read` action and the
    builder actions they need), then add them in the bot.
+
+### Key scopes per feature
+
+Every action needs `send` plus its own builder name. When a key lacks one, the bot names the
+missing action so the manager can ask the admin for it.
+
+| Feature | Key actions |
+| --- | --- |
+| Any screen or command | `read` |
+| Swap | `jupiter/swap` |
+| Track token | `jupiter/initialize` |
+| New LP position | `dlmm/open`, plus `dlmm/extend` for ranges over 70 bins |
+| Empty position | `dlmm/initialize` |
+| Add liquidity · claim fees · remove | `dlmm/add` (+ `dlmm/add-range`), `dlmm/claim-fee`, `dlmm/remove` |
+| Zap out | `dlmm/zap-out`, `dlmm/zap-out/swap` |
+| Close position · close empty strategy | `dlmm/close`, `strategy/close` |
+| Phoenix setup | `phoenix/initialize`, then `phoenix/onboard` |
+| Phoenix funds and trading | `phoenix/deposit`, `phoenix/withdraw`, `phoenix/order`, `phoenix/cancel`, `phoenix/sweep` |
+| Settings | `vault/update`, `vault/claim-fee`, `vault/close` |
+| Create vault | `vault/initialize`, on a key not limited to specific vaults |
 
 ```sh
 yarn install --frozen-lockfile

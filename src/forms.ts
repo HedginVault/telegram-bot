@@ -8,8 +8,8 @@ import {
   formatUnits,
   parseUnits,
 } from "@hedginvault/sdk";
-import type { PendingAction } from "./actions";
-import { lpFormMessage, swapFormMessage, swapQuoteMessage } from "./messages";
+import type { PendingAction, VaultChanges } from "./actions";
+import { lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapFormMessage, swapQuoteMessage, trackFormMessage, vaultFormMessage } from "./messages";
 import {
   type Button,
   type FormOp,
@@ -19,6 +19,7 @@ import {
   ScreenNotice,
   type TextField,
   type TokenRef,
+  MAX_MARKET_BUTTONS,
   button,
   expired,
   formButton,
@@ -30,6 +31,15 @@ export const MAX_SLIPPAGE_BPS = 300;
 export const SLIPPAGE_PRESETS = [50, 100, 300] as const;
 export const SHAPES: readonly DlmmShape[] = ["spot", "curve", "bidAsk"];
 export const RANGE_PRESETS_BPS = [100, 500, 1000] as const;
+/** `phoenix/order` accepts market slippage of 1..2000 bps. */
+export const MAX_ORDER_SLIPPAGE_BPS = 2000;
+export const ORDER_SLIPPAGE_PRESETS = [50, 100, 300] as const;
+/** `dlmm/initialize` takes at most this many bins. */
+export const MAX_EMPTY_POSITION_BINS = 70;
+export const MAX_VAULT_NAME_BYTES = 32;
+/** u64::MAX: a deposit cap that never binds. */
+export const NO_DEPOSIT_CAP = "18446744073709551615";
+export const USDC: TokenRef = { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", symbol: "USDC", decimals: 6 };
 
 /** An amount as typed: a share of the vault's balance, or an exact base-unit amount. */
 export type AmountInput = { kind: "share"; bps: number } | { kind: "exact"; baseUnits: string };
@@ -72,7 +82,68 @@ export interface LpForm {
   poolChoices?: { address: string; label: string }[];
 }
 
-export type Form = SwapForm | LpForm;
+export interface PhoenixTransferForm {
+  kind: "phoenixTransfer";
+  /** deposit: vault USDC → Phoenix collateral. withdraw: collateral → vault. */
+  direction: "deposit" | "withdraw";
+  vault: string;
+  usdc: TokenRef;
+  amount?: AmountInput;
+}
+
+export interface PhoenixMarketRef {
+  symbol: string;
+  /** USD per base unit; "0" when unavailable. */
+  markPrice: string;
+}
+
+export interface OrderForm {
+  kind: "order";
+  vault: string;
+  markets: PhoenixMarketRef[];
+  symbol?: string;
+  side: "long" | "short";
+  /** Base asset decimal, e.g. "0.5". */
+  size?: string;
+  type: "market" | "limit";
+  slippageBps: number;
+  /** Limit price, USD decimal. */
+  price?: string;
+  postOnly: boolean;
+  reduceOnly: boolean;
+}
+
+/** Fees and limits of a vault; limits in base units of the deposit token (shares share its decimals). */
+export interface VaultParams {
+  performanceFeeBps: number;
+  managementFeeBps: number;
+  depositCap: string;
+  minDeposit: string;
+  minWithdrawalShares: string;
+}
+
+export interface VaultForm {
+  kind: "vault";
+  /** Set when editing an existing vault; unset when creating one. */
+  vault?: string;
+  /** A vault the key manages, needed to look up a pasted deposit mint while creating. */
+  lookupVault?: string;
+  name?: string;
+  deposit: PickedToken;
+  params: VaultParams;
+  /** Editing: the on-chain values, so the update sends only what changed. */
+  current?: VaultParams;
+}
+
+/** Opens a Jupiter strategy so the vault may hold a token. */
+export interface TrackForm {
+  kind: "track";
+  vault: string;
+  deposit: TokenRef;
+  token?: PickedToken;
+}
+
+export type Form = SwapForm | LpForm | PhoenixTransferForm | OrderForm | VaultForm | TrackForm;
 
 
 /** A value the user typed that cannot be used; the message is shown as-is. */
@@ -106,15 +177,69 @@ export function resolveAmount(input: AmountInput, balanceBaseUnits: string): str
   return input.baseUnits;
 }
 
-/** "0.8", "0.8%", or "80bps" → basis points, capped by the protocol. */
-export function parseSlippage(text: string): number {
+function parseSlippageBps(text: string): number {
   const trimmed = text.trim().toLowerCase().replace(/\s+/g, "");
   const bpsMatch = /^(\d+)bps$/.exec(trimmed);
   const percentMatch = /^(\d+(?:\.\d{1,2})?)%?$/.exec(trimmed);
   const bps = bpsMatch ? Number(bpsMatch[1]) : percentMatch ? Math.round(Number(percentMatch[1]) * 100) : Number.NaN;
   if (!Number.isInteger(bps) || bps < 1) throw new InputError('Send slippage as a percent like "0.8" or as "80bps".');
+  return bps;
+}
+
+/** "0.8", "0.8%", or "80bps" → basis points, capped by the protocol. */
+export function parseSlippage(text: string): number {
+  const bps = parseSlippageBps(text);
   if (bps > MAX_SLIPPAGE_BPS) throw new InputError(`The protocol caps slippage at ${MAX_SLIPPAGE_BPS / 100}%.`);
   return bps;
+}
+
+/** Slippage for a Phoenix market order, which allows more room than a swap. */
+export function parseOrderSlippage(text: string): number {
+  const bps = parseSlippageBps(text);
+  if (bps > MAX_ORDER_SLIPPAGE_BPS) throw new InputError(`Phoenix market orders allow at most ${MAX_ORDER_SLIPPAGE_BPS / 100}% slippage.`);
+  return bps;
+}
+
+/** A fee typed as a percent ("2", "2.5%") → basis points, 0..10000. Exact: no floating point. */
+export function parseFeeBps(text: string): number {
+  const match = /^(\d{1,3})(?:\.(\d{1,2}))?\s*%?$/.exec(text.trim());
+  if (!match) throw new InputError('Send a fee as a percent like "2" or "0.5%" (at most 2 decimals).');
+  const bps = Number(match[1]) * 100 + Number((match[2] ?? "").padEnd(2, "0"));
+  if (bps > 10_000) throw new InputError("A fee must be between 0% and 100%.");
+  return bps;
+}
+
+/** A positive decimal string as Phoenix takes it ("0.5", "142.25"), at most 12 decimals. */
+export function parseDecimal(text: string, what: string): string {
+  const trimmed = text.trim().replace(/,/g, "");
+  if (!/^\d+(\.\d{1,12})?$/.test(trimmed) || !/[1-9]/.test(trimmed)) {
+    throw new InputError(`Send the ${what} as a positive number like "142.5", with at most 12 decimals.`);
+  }
+  return trimmed.replace(/^0+(?=\d)/, "");
+}
+
+/** Vault names are stored on chain in at most 32 UTF-8 bytes; emoji take 4. */
+export function parseVaultName(text: string): string {
+  const name = text.trim();
+  if (!name) throw new InputError("Send a name for the vault.");
+  const bytes = Buffer.byteLength(name, "utf8");
+  if (bytes > MAX_VAULT_NAME_BYTES) throw new InputError(`That name is ${bytes} bytes; the limit is ${MAX_VAULT_NAME_BYTES}. Use a shorter name.`);
+  return name;
+}
+
+/** A vault limit in display units → base units. `allowNone` accepts "none" for a cap that never binds. */
+export function parseLimit(text: string, decimals: number, allowNone = false): string {
+  const trimmed = text.trim().toLowerCase();
+  if (allowNone && (trimmed === "none" || trimmed === "no cap")) return NO_DEPOSIT_CAP;
+  let baseUnits: string;
+  try {
+    baseUnits = parseUnits(trimmed, decimals);
+  } catch (error) {
+    throw new InputError(`${error instanceof Error ? error.message : "Not an amount"}. Send an amount like "1000"${allowNone ? ', or "none" for no cap' : ""}.`);
+  }
+  if (BigInt(baseUnits) > BigInt(NO_DEPOSIT_CAP)) throw new InputError("That amount is too large.");
+  if (!allowNone && baseUnits === "0") throw new InputError("This minimum must be more than zero.");
+  return baseUnits;
 }
 
 export function parsePrice(text: string): number {
@@ -158,6 +283,57 @@ export async function createSwapForm(api: HedgeClient, vault: string): Promise<S
     .slice(0, 4)
     .map((t) => ({ ...tokenRef(t.token), pasted: false, verified: null }));
   return { kind: "swap", vault, deposit, side: "buy", slippageBps: SLIPPAGE_PRESETS[0], held };
+}
+
+export async function createPhoenixTransferForm(api: HedgeClient, vault: string, direction: PhoenixTransferForm["direction"]): Promise<PhoenixTransferForm> {
+  const phoenix = await api.getPhoenix(vault);
+  if (phoenix.status !== "ready") throw new ScreenNotice("Finish Phoenix setup first: open 📈 Phoenix.");
+  const holdings = await api.getHoldings(vault);
+  return { kind: "phoenixTransfer", direction, vault, usdc: tokenRef(holdings.depositToken) };
+}
+
+export async function createOrderForm(api: HedgeClient, vault: string): Promise<OrderForm> {
+  const phoenix = await api.getPhoenix(vault);
+  if (phoenix.status !== "ready") throw new ScreenNotice("Finish Phoenix setup first: open 📈 Phoenix.");
+  const markets = phoenix.markets.map(({ symbol, markPrice }) => ({ symbol, markPrice }));
+  return { kind: "order", vault, markets, side: "long", type: "market", slippageBps: ORDER_SLIPPAGE_PRESETS[1], postOnly: false, reduceOnly: false };
+}
+
+const oneUnit = (decimals: number) => (10n ** BigInt(decimals)).toString();
+const usdcPick: PickedToken = { ...USDC, pasted: false, verified: true };
+
+export async function createVaultForm(api: HedgeClient, vault?: string): Promise<VaultForm> {
+  if (!vault) {
+    const [lookup] = await api.listVaults();
+    const params = { performanceFeeBps: 0, managementFeeBps: 0, depositCap: NO_DEPOSIT_CAP, minDeposit: oneUnit(USDC.decimals), minWithdrawalShares: oneUnit(USDC.decimals) };
+    return { kind: "vault", lookupVault: lookup?.address, deposit: usdcPick, params };
+  }
+  const detail = await api.getVault(vault);
+  const current: VaultParams = {
+    performanceFeeBps: detail.performanceFeeBps,
+    managementFeeBps: detail.managementFeeBps,
+    depositCap: detail.depositCap,
+    minDeposit: detail.minDeposit,
+    minWithdrawalShares: detail.minWithdrawalShares,
+  };
+  const deposit = { mint: detail.depositMint, symbol: detail.depositSymbol, decimals: detail.depositDecimals, pasted: false, verified: null };
+  return { kind: "vault", vault, name: detail.name, deposit, params: { ...current }, current };
+}
+
+export async function createTrackForm(api: HedgeClient, vault: string): Promise<TrackForm> {
+  const holdings = await api.getHoldings(vault);
+  return { kind: "track", vault, deposit: tokenRef(holdings.depositToken) };
+}
+
+/** Only the settings that differ from the vault's, so `vault/update` touches nothing else. */
+export function vaultChanges(params: VaultParams, current: VaultParams): VaultChanges {
+  const changes: VaultChanges = {};
+  if (params.performanceFeeBps !== current.performanceFeeBps) changes.performanceFeeBps = params.performanceFeeBps;
+  if (params.managementFeeBps !== current.managementFeeBps) changes.managementFeeBps = params.managementFeeBps;
+  if (params.depositCap !== current.depositCap) changes.depositCap = params.depositCap;
+  if (params.minDeposit !== current.minDeposit) changes.minDeposit = params.minDeposit;
+  if (params.minWithdrawalShares !== current.minWithdrawalShares) changes.minWithdrawalShares = params.minWithdrawalShares;
+  return changes;
 }
 
 export async function createLpForm(api: HedgeClient, vault: string, position?: { position: string; lbPair: string }): Promise<LpForm> {
@@ -206,6 +382,16 @@ const PROMPTS: Record<TextField, string> = {
   maxPrice: "⬆️ Send the maximum price, in the pool's quote token per base token.",
   amountX: 'How much of the first token? Send "1.5", "25%", or "max". Send "0" to clear.',
   amountY: 'How much of the second token? Send "1.5", "25%", or "max". Send "0" to clear.',
+  symbol: 'Send the Phoenix market symbol, e.g. "SOL".',
+  size: 'How much of the base asset? Send a size like "0.5".',
+  price: 'Send the limit price in USD, e.g. "142.5".',
+  orderSlippage: 'Send slippage as a percent like "1" or as "100bps" (max 20%).',
+  name: `Send the vault's name (at most ${MAX_VAULT_NAME_BYTES} bytes).`,
+  performanceFee: 'Send the performance fee as a percent, e.g. "10" for 10%.',
+  managementFee: 'Send the yearly management fee as a percent, e.g. "2" for 2%.',
+  depositCap: 'Send the most the vault may hold, in deposit tokens, e.g. "100000". Send "none" for no cap.',
+  minDeposit: 'Send the smallest deposit allowed, in deposit tokens, e.g. "10".',
+  minWithdrawalShares: 'Send the fewest shares a withdrawal may redeem, e.g. "1".',
 };
 
 function getForm(deps: FormDeps, formId: string): Form {
@@ -218,6 +404,58 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
   const form = getForm(deps, formId);
   const show: FormResult = { kind: "show", screen: { kind: "form", formId } };
   if (op.op === "ask") return { kind: "ask", field: op.field, prompt: PROMPTS[op.field] };
+  const review = async (action: Promise<PendingAction>): Promise<FormResult> => ({ kind: "show", screen: { kind: "confirm", actionId: deps.actions.put(await action) } });
+  if (form.kind === "phoenixTransfer") {
+    if (op.op === "share") {
+      form.amount = { kind: "share", bps: op.bps };
+      return show;
+    }
+    if (op.op === "review") return review(phoenixTransferAction(form, deps.api));
+    throw expired();
+  }
+  if (form.kind === "order") {
+    switch (op.op) {
+      case "market": {
+        const market = form.markets[op.index];
+        if (!market) throw expired();
+        form.symbol = market.symbol;
+        return show;
+      }
+      case "side":
+        form.side = form.side === "long" ? "short" : "long";
+        return show;
+      case "orderType":
+        form.type = form.type === "market" ? "limit" : "market";
+        return show;
+      case "postOnly":
+        form.postOnly = !form.postOnly;
+        return show;
+      case "reduceOnly":
+        form.reduceOnly = !form.reduceOnly;
+        return show;
+      case "slippage":
+        form.slippageBps = op.bps;
+        return show;
+      case "review":
+        return review(Promise.resolve(orderAction(form)));
+      default:
+        throw expired();
+    }
+  }
+  if (form.kind === "vault") {
+    if (op.op === "usdc") {
+      setDeposit(form, usdcPick);
+      return show;
+    }
+    if (op.op === "review") return review(Promise.resolve(vaultAction(form)));
+    throw expired();
+  }
+  if (form.kind === "track") {
+    if (op.op !== "review") throw expired();
+    const token = form.token;
+    if (!token) throw new InputError("Paste the token's contract address first.");
+    return review(Promise.resolve({ kind: "jupiterInit", vault: form.vault, token: tokenRef(token), verified: token.verified }));
+  }
   if (form.kind === "swap") {
     switch (op.op) {
       case "side":
@@ -259,14 +497,96 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
       setRange(form, op.bps);
       return show;
     case "review":
-      return { kind: "show", screen: { kind: "confirm", actionId: deps.actions.put(await lpAction(form, deps.api)) } };
+      return review(lpAction(form, deps.api));
+    case "empty":
+      return review(Promise.resolve(emptyPositionAction(form)));
     default:
       throw expired();
   }
 }
 
+function setDeposit(form: VaultForm, token: PickedToken): void {
+  form.deposit = token;
+  // Limits are in the deposit token's units, so a new token resets them to one whole unit.
+  form.params.minDeposit = oneUnit(token.decimals);
+  form.params.minWithdrawalShares = oneUnit(token.decimals);
+  form.params.depositCap = NO_DEPOSIT_CAP;
+}
+
+async function pasteMint(api: HedgeClient, lookupVault: string, text: string): Promise<PickedToken> {
+  const mint = text.trim();
+  if (!BASE58_ADDRESS.test(mint)) throw new InputError("That is not a Solana address. Paste the token's mint address.");
+  const detail = await api.getToken(lookupVault, mint);
+  return { ...tokenRef(detail), pasted: true, verified: detail.verified };
+}
+
 export async function applyFormText(formId: string, field: TextField, text: string, deps: FormDeps): Promise<void> {
   const form = getForm(deps, formId);
+  if (form.kind === "phoenixTransfer") {
+    if (field !== "amount") throw expired();
+    form.amount = parseAmountInput(text, form.usdc.decimals);
+    return;
+  }
+  if (form.kind === "order") {
+    switch (field) {
+      case "symbol": {
+        const market = form.markets.find((m) => m.symbol.toLowerCase() === text.trim().toLowerCase());
+        if (!market) throw new InputError(`Phoenix has no "${text.trim()}" market.`);
+        form.symbol = market.symbol;
+        return;
+      }
+      case "size":
+        form.size = parseDecimal(text, "size");
+        return;
+      case "price":
+        form.price = parseDecimal(text, "price");
+        return;
+      case "orderSlippage":
+        form.slippageBps = parseOrderSlippage(text);
+        return;
+      default:
+        throw expired();
+    }
+  }
+  if (form.kind === "vault") {
+    const { decimals } = form.deposit;
+    switch (field) {
+      case "name":
+        if (form.vault) throw expired();
+        form.name = parseVaultName(text);
+        return;
+      case "token": {
+        if (form.vault) throw expired();
+        if (!form.lookupVault) throw new InputError("The bot can look up a pasted token only once your key manages a vault. Create this one in USDC.");
+        setDeposit(form, await pasteMint(deps.api, form.lookupVault, text));
+        return;
+      }
+      case "performanceFee":
+        form.params.performanceFeeBps = parseFeeBps(text);
+        return;
+      case "managementFee":
+        form.params.managementFeeBps = parseFeeBps(text);
+        return;
+      case "depositCap":
+        form.params.depositCap = parseLimit(text, decimals, true);
+        return;
+      case "minDeposit":
+        form.params.minDeposit = parseLimit(text, decimals);
+        return;
+      case "minWithdrawalShares":
+        form.params.minWithdrawalShares = parseLimit(text, decimals);
+        return;
+      default:
+        throw expired();
+    }
+  }
+  if (form.kind === "track") {
+    if (field !== "token") throw expired();
+    const token = await pasteMint(deps.api, form.vault, text);
+    if (token.mint === form.deposit.mint) throw new InputError(`That is the deposit token, ${form.deposit.symbol}. The vault always holds it.`);
+    form.token = token;
+    return;
+  }
   if (form.kind === "swap") {
     switch (field) {
       case "token": {
@@ -354,6 +674,66 @@ async function lpAction(form: LpForm, api: HedgeClient): Promise<PendingAction> 
   };
 }
 
+function emptyPositionAction(form: LpForm): PendingAction {
+  const pool = form.pool;
+  if (!pool || form.mode !== "open") throw new InputError("Pick a pool first.");
+  const range = formRange(form);
+  if (typeof range === "string") throw new InputError(range);
+  if (range.binCount > MAX_EMPTY_POSITION_BINS) {
+    throw new InputError(`An empty position can span at most ${MAX_EMPTY_POSITION_BINS} bins; this range has ${range.binCount}. Narrow it.`);
+  }
+  return {
+    kind: "dlmmInit",
+    vault: form.vault,
+    lbPair: pool.lbPair,
+    pairLabel: `${pool.tokenX.symbol}/${pool.tokenY.symbol}`,
+    lowerBinId: range.lowerBinId,
+    upperBinId: range.upperBinId,
+    priceRange: { low: formatPrice(range.lowPrice), high: formatPrice(range.highPrice) },
+  };
+}
+
+async function phoenixTransferAction(form: PhoenixTransferForm, api: HedgeClient): Promise<PendingAction> {
+  if (!form.amount) throw new InputError("Set an amount first.");
+  let balance: string;
+  if (form.direction === "deposit") balance = balanceOf(await api.getHoldings(form.vault), form.usdc.mint);
+  else {
+    const phoenix = await api.getPhoenix(form.vault);
+    const withdrawable = phoenix.account?.withdrawable ?? phoenix.withdrawable;
+    if (withdrawable === null) {
+      if (form.amount.kind === "share") throw new InputError("Phoenix did not report a withdrawable amount just now. Type an exact amount.");
+      balance = form.amount.baseUnits;
+    } else balance = withdrawable.startsWith("-") ? "0" : withdrawable;
+  }
+  const amountBaseUnits = resolveAmount(form.amount, balance);
+  if (amountBaseUnits === "0") throw new InputError(form.direction === "deposit" ? "The vault holds no idle USDC." : "Nothing is withdrawable from Phoenix right now.");
+  return form.direction === "deposit" ? { kind: "phoenixDeposit", vault: form.vault, amountBaseUnits } : { kind: "phoenixWithdraw", vault: form.vault, amountBaseUnits };
+}
+
+function orderAction(form: OrderForm): PendingAction {
+  if (!form.symbol) throw new InputError("Pick a market first.");
+  if (!form.size) throw new InputError("Set a size first.");
+  let order: Extract<PendingAction, { kind: "phoenixOrder" }>["order"]["order"];
+  if (form.type === "market") order = { type: "market", slippageBps: form.slippageBps };
+  else {
+    if (!form.price) throw new InputError("Set a limit price first.");
+    order = { type: "limit", price: form.price, postOnly: form.postOnly };
+  }
+  return { kind: "phoenixOrder", vault: form.vault, order: { symbol: form.symbol, side: form.side, size: form.size, reduceOnly: form.reduceOnly, order } };
+}
+
+function vaultAction(form: VaultForm): PendingAction {
+  const deposit = tokenRef(form.deposit);
+  if (form.vault) {
+    if (!form.current) throw expired();
+    const changes = vaultChanges(form.params, form.current);
+    if (Object.keys(changes).length === 0) throw new InputError("Change at least one setting first.");
+    return { kind: "vaultUpdate", vault: form.vault, deposit, changes };
+  }
+  if (!form.name) throw new InputError("Name the vault first.");
+  return { kind: "vaultCreate", name: form.name, deposit, ...form.params };
+}
+
 export function formatPrice(price: number): string {
   if (!Number.isFinite(price)) return "?";
   return price >= 1 ? price.toLocaleString("en-US", { maximumFractionDigits: 4 }) : price.toPrecision(4);
@@ -361,8 +741,84 @@ export function formatPrice(price: number): string {
 
 export async function renderForm(formId: string, deps: FormDeps): Promise<RenderedScreen> {
   const form = getForm(deps, formId);
-  const holdings = await deps.api.getHoldings(form.vault);
-  return form.kind === "swap" ? renderSwapForm(formId, form, holdings, deps) : renderLpForm(formId, form, holdings);
+  switch (form.kind) {
+    case "swap":
+      return renderSwapForm(formId, form, await deps.api.getHoldings(form.vault), deps);
+    case "lp":
+      return renderLpForm(formId, form, await deps.api.getHoldings(form.vault));
+    case "phoenixTransfer":
+      return renderPhoenixTransferForm(formId, form);
+    case "order":
+      return renderOrderForm(formId, form);
+    case "vault":
+      return renderVaultForm(formId, form);
+    case "track":
+      return renderTrackForm(formId, form);
+  }
+}
+
+const check = (on: boolean) => (on ? "✓ " : "");
+
+function renderPhoenixTransferForm(formId: string, form: PhoenixTransferForm): RenderedScreen {
+  const op = (text: string, o: FormOp) => formButton(text, formId, o);
+  const rows: Button[][] = [
+    [
+      ...[2500, 5000, 10_000].map((bps) => op(`${check(form.amount?.kind === "share" && form.amount.bps === bps)}${bps === 10_000 ? "Max" : `${bps / 100}%`}`, { op: "share", bps })),
+      op("✏️ Amount", { op: "ask", field: "amount" }),
+    ],
+  ];
+  if (form.amount) rows.push([op("✅ Review", { op: "review" })]);
+  rows.push([button("⬅️ Phoenix", { kind: "phoenix", vault: form.vault })]);
+  return { html: phoenixTransferFormMessage(form), keyboard: keyboard(rows) };
+}
+
+function renderOrderForm(formId: string, form: OrderForm): RenderedScreen {
+  const op = (text: string, o: FormOp) => formButton(text, formId, o);
+  const marketButtons = form.markets.slice(0, MAX_MARKET_BUTTONS).map((m, index) => op(`${check(form.symbol === m.symbol)}${m.symbol}`, { op: "market", index }));
+  const rows: Button[][] = [];
+  for (let i = 0; i < marketButtons.length; i += 4) rows.push(marketButtons.slice(i, i + 4));
+  rows.push(
+    [op("✏️ Market", { op: "ask", field: "symbol" }), op("✏️ Size", { op: "ask", field: "size" })],
+    [op(form.side === "long" ? "🟢 Long · tap for short" : "🔴 Short · tap for long", { op: "side" })],
+    [op(form.type === "market" ? "⚡ Market order · tap for limit" : "📌 Limit order · tap for market", { op: "orderType" })],
+  );
+  if (form.type === "market") {
+    rows.push([
+      ...ORDER_SLIPPAGE_PRESETS.map((bps) => op(`${check(form.slippageBps === bps)}${bps / 100}%`, { op: "slippage", bps })),
+      op(ORDER_SLIPPAGE_PRESETS.includes(form.slippageBps as (typeof ORDER_SLIPPAGE_PRESETS)[number]) ? "✏️ Slippage" : `✓ ${form.slippageBps / 100}% ✏️`, { op: "ask", field: "orderSlippage" }),
+    ]);
+  } else {
+    rows.push([op("✏️ Limit price", { op: "ask", field: "price" }), op(`Post-only: ${form.postOnly ? "on" : "off"}`, { op: "postOnly" })]);
+  }
+  rows.push([op(`↩️ Reduce-only: ${form.reduceOnly ? "on" : "off"}`, { op: "reduceOnly" })]);
+  if (form.symbol && form.size && (form.type === "market" || form.price)) rows.push([op("✅ Review", { op: "review" })]);
+  rows.push([button("⬅️ Phoenix", { kind: "phoenix", vault: form.vault })]);
+  return { html: orderFormMessage(form), keyboard: keyboard(rows) };
+}
+
+function renderVaultForm(formId: string, form: VaultForm): RenderedScreen {
+  const op = (text: string, o: FormOp) => formButton(text, formId, o);
+  const rows: Button[][] = [];
+  if (!form.vault) {
+    rows.push([op("✏️ Name", { op: "ask", field: "name" })]);
+    rows.push([op(`${check(form.deposit.mint === USDC.mint)}USDC`, { op: "usdc" }), op("📋 Paste deposit mint", { op: "ask", field: "token" })]);
+  }
+  rows.push(
+    [op("✏️ Performance fee", { op: "ask", field: "performanceFee" }), op("✏️ Management fee", { op: "ask", field: "managementFee" })],
+    [op("✏️ Deposit cap", { op: "ask", field: "depositCap" }), op("✏️ Min deposit", { op: "ask", field: "minDeposit" })],
+    [op("✏️ Min withdrawal shares", { op: "ask", field: "minWithdrawalShares" })],
+  );
+  if (form.vault ? form.current && Object.keys(vaultChanges(form.params, form.current)).length > 0 : form.name) rows.push([op("✅ Review", { op: "review" })]);
+  rows.push([form.vault ? button("⬅️ Settings", { kind: "settings", vault: form.vault }) : button("🏦 Vaults", { kind: "vaults" })]);
+  return { html: vaultFormMessage(form), keyboard: keyboard(rows) };
+}
+
+function renderTrackForm(formId: string, form: TrackForm): RenderedScreen {
+  const op = (text: string, o: FormOp) => formButton(text, formId, o);
+  const rows: Button[][] = [[op("📋 Paste CA", { op: "ask", field: "token" })]];
+  if (form.token) rows.push([op("✅ Review", { op: "review" })]);
+  rows.push([button("⬅️ Strategies", { kind: "strategies", vault: form.vault })]);
+  return { html: trackFormMessage(form), keyboard: keyboard(rows) };
 }
 
 function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps: FormDeps): RenderedScreen {
@@ -414,6 +870,7 @@ function renderLpForm(formId: string, form: LpForm, holdings: Holdings): Rendere
     if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "ask", field: "amountY" }));
     rows.push(amountButtons);
     if ((form.amountX || form.amountY) && (form.mode === "add" || (range && typeof range !== "string"))) rows.push([op("✅ Review", { op: "review" })]);
+    if (form.mode === "open" && range && typeof range !== "string") rows.push([op("🫙 Empty position only", { op: "empty" })]);
   }
   rows.push([button("⬅️ Vault", { kind: "vault", vault: form.vault })]);
   const balances = pool ? { x: balanceOf(holdings, pool.tokenX.mint), y: balanceOf(holdings, pool.tokenY.mint) } : undefined;

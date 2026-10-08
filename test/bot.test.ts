@@ -14,7 +14,25 @@ import bs58 from "bs58";
 import { randomBytes } from "node:crypto";
 import { createBot } from "../src/bot";
 import { createWalletStore } from "../src/wallets";
-import { POOL, SOL, USDC, VAULT, holdings, pool, poolSearch, quote, strategies, vaultSummary } from "./fixtures";
+import {
+  POOL,
+  SOL,
+  USDC,
+  VAULT,
+  holdings,
+  navHistory,
+  phoenixNone,
+  phoenixReady,
+  phoenixRegistered,
+  pool,
+  poolSearch,
+  quote,
+  requestQueue,
+  strategies,
+  strategyHistory,
+  vaultDetail,
+  vaultSummary,
+} from "./fixtures";
 
 const ALLOWED_USER = 42;
 const PROGRAM_ID = "r2ahBQ6gbPCJ9FxBymYcXuwXi8NmenRry7SE7QR7FAt";
@@ -64,6 +82,14 @@ function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = ma
     listVaults: vi.fn(async () => [vaultSummary]),
     getHoldings: vi.fn(async () => holdings),
     getStrategies: vi.fn(async () => strategies),
+    getVault: vi.fn(async () => vaultDetail),
+    getNavHistory: vi.fn(async () => navHistory),
+    getRequests: vi.fn(async () => requestQueue),
+    getStrategyHistory: vi.fn(async () => strategyHistory),
+    getPhoenix: vi.fn(async () => phoenixReady),
+    onboardPhoenix: vi.fn(async () => {
+      throw new Error("unexpected onboard");
+    }),
     getQuote: vi.fn(async () => quote),
     build: vi.fn(async () => {
       throw new Error("unexpected build");
@@ -211,14 +237,25 @@ describe("buttons", () => {
     const { send, buttons, lastScreen } = setup();
     await send("/start");
     expect(lastScreen().text).toMatch(/^🏦 <b>Your vaults<\/b> \(1\)/);
-    expect(buttons().map((b) => b.text)).toEqual(["1. Demo", "🔄 Refresh", "👛 Wallet"]);
+    expect(buttons().map((b) => b.text)).toEqual(["1. Demo", "✨ Create vault", "🔄 Refresh", "👛 Wallet"]);
   });
 
   it("walks vault → holdings → back by tapping, editing one message", async () => {
     const { send, click, buttons, lastScreen, calls } = setup();
     await send("/start");
     await click("1. Demo");
-    expect(buttons().map((b) => b.text)).toEqual(["📊 Holdings", "🧩 Strategies", "💱 Swap", "➕ New LP position", "🏦 Vaults"]);
+    expect(buttons().map((b) => b.text)).toEqual([
+      "📊 Holdings",
+      "🧩 Strategies",
+      "💱 Swap",
+      "➕ New LP position",
+      "📊 NAV history",
+      "📋 Requests",
+      "🗂 Strategy history",
+      "📈 Phoenix",
+      "⚙️ Settings",
+      "🏦 Vaults",
+    ]);
     await click("📊 Holdings");
     expect(lastScreen().text).toMatch(/^📊 <b>Demo<\/b> · holdings/);
     await click("⬅️ Back");
@@ -696,5 +733,377 @@ describe("wallets", () => {
       },
     });
     expect(replies).toEqual([]);
+  });
+});
+
+const POSITION = "Pos1111111111111111111111111111111111111111";
+const NEW_VAULT = "NewVau1t11111111111111111111111111111111111";
+const NEW_POSITION = "NewPos11111111111111111111111111111111111111";
+
+async function openVault(ui: ReturnType<typeof setup>, label?: string) {
+  await ui.send("/start");
+  await ui.click("1. Demo");
+  if (label) await ui.click(label);
+}
+
+/** Confirms the open confirm screen and waits for the action to finish. */
+async function confirm(ui: ReturnType<typeof setup>) {
+  await ui.click("✅ Confirm and send");
+  await ui.settle();
+}
+
+describe("vault reads", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each([
+    ["/nav 1", "📊 <b>Demo</b> · NAV history (latest 2, newest first)"],
+    ["/requests 1", "📋 <b>Demo</b> · queued requests"],
+    ["/history 1", "🗂 <b>Demo</b> · closed strategies (latest 1, newest first)"],
+    ["/phoenix 1", "📈 <b>Demo</b> · Phoenix perps"],
+    ["/settings 1", "⚙️ <b>Demo</b> · settings"],
+  ])("answers %s", async (command, title) => {
+    const { send, replies } = setup();
+    await send(command);
+    expect(replies.at(-1)?.split("\n")[0]).toBe(title);
+  });
+
+  it("asks for the last 10 NAVs from the vault screen", async () => {
+    const ui = setup();
+    await openVault(ui, "📊 NAV history");
+    expect(ui.api.getNavHistory).toHaveBeenCalledWith(VAULT, 10);
+    expect(ui.buttons().map((b) => b.text)).toEqual(["🔄 Refresh", "⬅️ Back", "🏦 Vaults"]);
+  });
+
+  it("explains a server without history in plain words", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { send, replies } = setup({ getNavHistory: vi.fn(async () => Promise.reject(new ApiError(503, "HistoryUnavailable", "Service temporarily unavailable"))) });
+    await send("/nav 1");
+    expect(replies.at(-1)).toBe(
+      "❌ <b>API error 503 (HistoryUnavailable)</b>\nService temporarily unavailable\nThis server keeps no history database, so history is not available.",
+    );
+  });
+
+  it("names the read scope when the key lacks it", async () => {
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const { send, replies } = setup({ getRequests: vi.fn(async () => Promise.reject(new ApiError(403, "Forbidden", "Action is not enabled for this key"))) });
+    await send("/requests 1");
+    expect(replies.at(-1)).toBe(
+      '❌ <b>API error 403 (Forbidden)</b>\nAction is not enabled for this key\nThis API key may not do "read". Ask an admin to enable "read" for this key in the dashboard.',
+    );
+  });
+});
+
+describe("phoenix", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const actionButtons = (ui: ReturnType<typeof setup>) => ui.buttons().map((b) => b.text).filter((t) => t !== "🔄 Refresh" && t !== "⬅️ Back");
+
+  it.each([
+    ["no strategy", phoenixNone, ["🚀 Set up Phoenix"]],
+    ["not onboarded", phoenixRegistered, ["🤝 Onboard trader"]],
+    ["ready", phoenixReady, ["💵 Deposit USDC", "📤 Withdraw", "🆕 New order", "🧹 Sweep", "✖️ Cancel all SOL orders"]],
+    ["not a USDC vault", { ...phoenixNone, usdcVault: false }, []],
+  ] as const)("shows only the next step when %s", async (_, phoenix, expected) => {
+    const ui = setup({ getPhoenix: vi.fn(async () => phoenix) });
+    await openVault(ui, "📈 Phoenix");
+    expect(actionButtons(ui)).toEqual(expected);
+  });
+
+  it("sets up the strategy, then onboards the trader through onboardPhoenix", async () => {
+    const onboardPhoenix = vi.fn(async () => ({ kind: "confirmed" as const, signatures: ["OnboardSig"] }));
+    const ui = setup({ ...tradingApi(), getPhoenix: vi.fn(async () => phoenixNone), onboardPhoenix });
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🚀 Set up Phoenix");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("phoenix/initialize", { vault: VAULT });
+
+    vi.mocked(ui.api.getPhoenix).mockResolvedValue(phoenixRegistered);
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🤝 Onboard trader");
+    expect(ui.lastScreen().text).toContain("<b>Onboard the vault's Phoenix trader</b>");
+    await confirm(ui);
+    expect(onboardPhoenix).toHaveBeenCalledWith(VAULT, expect.objectContaining({ publicKey: manager.publicKey }), expect.anything());
+    expect(ui.lastScreen().text).toContain("<b>Done.</b> 1 transaction(s) confirmed.");
+  });
+
+  it("explains an already onboarded trader", async () => {
+    const onboardPhoenix = vi.fn(async () => ({
+      kind: "failed" as const,
+      signatures: [],
+      code: "PhoenixAlreadyOnboarded",
+      message: "The vault's Phoenix trader is already onboarded",
+    }));
+    const ui = setup({ getPhoenix: vi.fn(async () => phoenixRegistered), onboardPhoenix });
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🤝 Onboard trader");
+    await confirm(ui);
+    expect(ui.lastScreen().text).toContain("<i>The vault's Phoenix trader is already onboarded. Open 📈 Phoenix again to deposit and trade.</i>");
+  });
+
+  it("deposits a share of idle USDC and withdraws everything withdrawable", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("💵 Deposit USDC");
+    await ui.click("50%");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("<b>Deposit 0.5 USDC into Phoenix</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("phoenix/deposit", { vault: VAULT, amount: "500000" });
+
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("📤 Withdraw");
+    await ui.click("Max");
+    await ui.click("✅ Review");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("phoenix/withdraw", { vault: VAULT, amount: "4000000" });
+  });
+
+  it("places a short market order with custom slippage", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🆕 New order");
+    await ui.click("SOL");
+    await ui.click("🟢 Long · tap for short");
+    await ui.fill("✏️ Size", "0.5");
+    await ui.fill("✏️ Slippage", "5");
+    expect(ui.lastScreen().text).toContain("Market order · slippage 5%");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("<b>Short 0.5 SOL at market</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("phoenix/order", {
+      vault: VAULT,
+      symbol: "SOL",
+      side: "short",
+      size: "0.5",
+      reduceOnly: false,
+      order: { type: "market", slippageBps: 500 },
+    });
+  });
+
+  it("places a post-only, reduce-only limit order on a typed market", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🆕 New order");
+    await ui.fill("✏️ Market", "btc");
+    await ui.fill("✏️ Size", "0.01");
+    await ui.click("⚡ Market order · tap for limit");
+    expect(ui.buttons().map((b) => b.text)).not.toContain("✅ Review");
+    await ui.fill("✏️ Limit price", "65,000.5");
+    await ui.click("Post-only: off");
+    await ui.click("↩️ Reduce-only: off");
+    await ui.click("✅ Review");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("phoenix/order", {
+      vault: VAULT,
+      symbol: "BTC",
+      side: "long",
+      size: "0.01",
+      reduceOnly: true,
+      order: { type: "limit", price: "65000.5", postOnly: true },
+    });
+  });
+
+  it("cancels every order on one market and sweeps", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("✖️ Cancel all SOL orders");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("phoenix/cancel", { vault: VAULT, symbol: "SOL", orders: "all" });
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🧹 Sweep");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("phoenix/sweep", { vault: VAULT });
+  });
+
+  it("tells the user which scope the admin must grant", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => Promise.reject(new ApiError(403, "Forbidden", "Action is not enabled for this key")));
+    const ui = setup(api);
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🧹 Sweep");
+    await confirm(ui);
+    expect(ui.lastScreen().text).toContain(
+      '<i>This API key may not do "phoenix/sweep". Ask an admin to enable "phoenix/sweep" and "send" for this key in the dashboard.</i>',
+    );
+  });
+});
+
+describe("vault settings", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("offers toggles and the statuses the vault is not in", async () => {
+    const ui = setup();
+    await openVault(ui, "⚙️ Settings");
+    expect(ui.buttons().map((b) => b.text)).toEqual([
+      "⏸ Pause deposits",
+      "▶️ Resume withdrawals",
+      "🟡 Reduce-only",
+      "🔴 Paused",
+      "✏️ Edit fees and limits",
+      "💰 Claim manager fee",
+      "🗑 Close vault",
+      "🔄 Refresh",
+      "⬅️ Back",
+    ]);
+  });
+
+  it.each([
+    ["⏸ Pause deposits", { vault: VAULT, depositPaused: true }],
+    ["▶️ Resume withdrawals", { vault: VAULT, withdrawalPaused: false }],
+    ["🟡 Reduce-only", { vault: VAULT, status: "reduceOnly" }],
+  ])("%s sends one vault/update with only that field", async (label, body) => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "⚙️ Settings");
+    await ui.click(label);
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("vault/update", body);
+  });
+
+  it("warns in plain words before pausing the vault", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "⚙️ Settings");
+    await ui.click("🔴 Paused");
+    expect(ui.lastScreen().text).toContain("Status → <b>Paused</b>");
+    expect(ui.lastScreen().text).toContain(
+      "<blockquote>⚠️ Paused stops depositors from withdrawing, and blocks deposits and trading, until you set the vault back to Normal.</blockquote>",
+    );
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("vault/update", { vault: VAULT, status: "paused" });
+  });
+
+  it("edits fees and limits and sends only the changed fields", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "⚙️ Settings");
+    await ui.click("✏️ Edit fees and limits");
+    expect(ui.buttons().map((b) => b.text)).not.toContain("✅ Review");
+    await ui.fill("✏️ Performance fee", "12.5%");
+    await ui.fill("✏️ Management fee", "2");
+    await ui.fill("✏️ Deposit cap", "none");
+    expect(ui.lastScreen().text).toContain("Performance fee → <b>12.5%</b>");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("Deposit cap → <b>no cap</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("vault/update", { vault: VAULT, performanceFeeBps: 1250, depositCap: "18446744073709551615" });
+  });
+
+  it("claims the manager fee and closes the vault after a warning", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "⚙️ Settings");
+    await ui.click("💰 Claim manager fee");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("vault/claim-fee", { vault: VAULT });
+    await openVault(ui, "⚙️ Settings");
+    await ui.click("🗑 Close vault");
+    expect(ui.lastScreen().text).toContain("⚠️ Closing deletes this vault for good.");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenLastCalledWith("vault/close", { vault: VAULT });
+  });
+});
+
+describe("create vault", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("creates a USDC vault and links the new address", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => [{ ...builtStep(), vault: NEW_VAULT }]);
+    const ui = setup(api);
+    await ui.send("/start");
+    await ui.click("✨ Create vault");
+    expect(ui.lastScreen().text).toContain("Deposit token <b>USDC</b>");
+    await ui.fill("✏️ Name", "Alpha 🚀");
+    await ui.fill("✏️ Performance fee", "10");
+    await ui.fill("✏️ Deposit cap", "50,000");
+    await ui.fill("✏️ Min deposit", "5");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain('<b>Create the vault "Alpha 🚀"</b>');
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("vault/initialize", {
+      name: "Alpha 🚀",
+      depositMint: USDC,
+      performanceFeeBps: 1000,
+      managementFeeBps: 0,
+      depositCap: "50000000000",
+      minDeposit: "5000000",
+      minWithdrawalShares: "1000000",
+    });
+    expect(ui.lastScreen().text).toContain(`New vault <code>${NEW_VAULT}</code>`);
+    expect(ui.buttons().find((b) => b.text === "🏦 Open new vault")?.callback_data).toBe(`v:${NEW_VAULT}`);
+  });
+
+  it("looks up a pasted deposit mint through a managed vault", async () => {
+    const MINT = "PastedMint111111111111111111111111111111111";
+    const ui = setup();
+    await ui.send("/start");
+    await ui.click("✨ Create vault");
+    await ui.fill("📋 Paste deposit mint", MINT);
+    expect(ui.api.getToken).toHaveBeenCalledWith(VAULT, MINT);
+    expect(ui.lastScreen().text).toContain(`Deposit token <b>PASTED</b> <code>${MINT}</code>`);
+  });
+
+  it("explains a vault-restricted key", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => Promise.reject(new ApiError(403, "Forbidden", "Vault creation requires a key without a vault restriction")));
+    const ui = setup(api);
+    await ui.send("/start");
+    await ui.click("✨ Create vault");
+    await ui.fill("✏️ Name", "Beta");
+    await ui.click("✅ Review");
+    await confirm(ui);
+    expect(ui.lastScreen().text).toContain(
+      '<i>Creating a vault needs an API key that is not limited to specific vaults. Ask an admin for one with "vault/initialize" and "send".</i>',
+    );
+    expect(ui.buttons().map((b) => b.text)).toEqual(["🏦 Vaults"]);
+  });
+});
+
+describe("strategy setup", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it("tracks a pasted token after showing it is unverified", async () => {
+    const MINT = "PastedMint111111111111111111111111111111111";
+    const ui = setup(tradingApi());
+    await openVault(ui, "🧩 Strategies");
+    await ui.click("➕ Track token");
+    await ui.fill("📋 Paste CA", MINT);
+    expect(ui.lastScreen().text).toContain("⚠️ <i>Not verified by Jupiter. Double-check the address.</i>");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("Jupiter has not verified this token");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("jupiter/initialize", { vault: VAULT, targetMint: MINT });
+  });
+
+  it("closes a DLMM position after a warning", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "🧩 Strategies");
+    await ui.click("⚙️ SOL/USDC position");
+    await ui.click("🗑 Close position");
+    expect(ui.lastScreen().text).toContain("removes all of the position's liquidity, claims its fees");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/close", { vault: VAULT, position: POSITION });
+  });
+
+  it("creates an empty position over the chosen range and shows its address", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => [{ ...builtStep(), position: NEW_POSITION }]);
+    const ui = setup(api);
+    await openVault(ui, "➕ New LP position");
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.fill("⬇️ Min price", "148");
+    await ui.fill("⬆️ Max price", "152");
+    await ui.click("🫙 Empty position only");
+    expect(ui.lastScreen().text).toContain("<b>Create an empty SOL/USDC position</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/initialize", { vault: VAULT, lbPair: POOL, lowerBinId: -114, upperBinId: -85 });
+    expect(ui.lastScreen().text).toContain(`New position <code>${NEW_POSITION}</code>`);
+  });
+
+  it("refuses an empty position wider than 70 bins", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "➕ New LP position");
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click("±10%");
+    await ui.click("🫙 Empty position only");
+    expect(ui.alerts().at(-1)).toMatch(/^An empty position can span at most 70 bins; this range has \d+\. Narrow it\.$/);
+    expect(ui.api.build).not.toHaveBeenCalled();
   });
 });

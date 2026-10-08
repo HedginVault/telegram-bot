@@ -1,4 +1,4 @@
-import type { ActionRequest, DlmmShape } from "@hedginvault/sdk";
+import type { ActionRequest, DlmmShape, ExecuteOptions, HedgeClient, Outcome, TransactionSigner } from "@hedginvault/sdk";
 import type { TokenRef } from "./ui";
 
 export const REMOVE_BPS = [2500, 5000, 10_000] as const;
@@ -16,6 +16,11 @@ export interface Liquidity {
   amountY: string;
   shape: DlmmShape;
 }
+
+/** Fields of a `vault/update` besides the vault; only the ones given change. */
+export type VaultChanges = Omit<Extract<ActionRequest, { action: "vault/update" }>, "action" | "vault">;
+/** A Phoenix order as `phoenix/order` takes it, without the vault. */
+export type PhoenixOrder = Omit<Extract<ActionRequest, { action: "phoenix/order" }>, "action" | "vault">;
 
 /** A fund-moving operation the user has picked but not yet confirmed. */
 export type PendingAction =
@@ -45,9 +50,55 @@ export type PendingAction =
       priceRange: { low: string; high: string };
       liquidity: Liquidity;
     }
-  | { kind: "closeStrategy"; vault: string; strategy: string; label: string };
+  | {
+      kind: "dlmmInit";
+      vault: string;
+      lbPair: string;
+      pairLabel: string;
+      lowerBinId: number;
+      /** Exclusive. */
+      upperBinId: number;
+      priceRange: { low: string; high: string };
+    }
+  | { kind: "dlmmClose"; vault: string; position: string; pairLabel: string }
+  | { kind: "closeStrategy"; vault: string; strategy: string; label: string }
+  | { kind: "jupiterInit"; vault: string; token: TokenRef; verified: boolean | null }
+  | { kind: "phoenixInit"; vault: string }
+  /** Not a builder: runs `onboardPhoenix`, which Phoenix co-signs. */
+  | { kind: "phoenixOnboard"; vault: string }
+  | { kind: "phoenixDeposit"; vault: string; amountBaseUnits: string }
+  | { kind: "phoenixWithdraw"; vault: string; amountBaseUnits: string }
+  | { kind: "phoenixOrder"; vault: string; order: PhoenixOrder }
+  | { kind: "phoenixCancel"; vault: string; symbol: string }
+  | { kind: "phoenixSweep"; vault: string }
+  /** The only action without a vault: it creates one. */
+  | {
+      kind: "vaultCreate";
+      name: string;
+      deposit: TokenRef;
+      performanceFeeBps: number;
+      managementFeeBps: number;
+      depositCap: string;
+      minDeposit: string;
+      /** Share base units; shares have the deposit token's decimals. */
+      minWithdrawalShares: string;
+    }
+  /** `deposit` is display only: limits are in its units. */
+  | { kind: "vaultUpdate"; vault: string; deposit: TokenRef; changes: VaultChanges }
+  | { kind: "vaultClaimFee"; vault: string }
+  | { kind: "vaultClose"; vault: string };
 
-export function toActionRequest(action: PendingAction): ActionRequest {
+export const actionVault = (action: PendingAction): string | undefined => ("vault" in action ? action.vault : undefined);
+
+/** The API key action this needs besides `send`; named in the hint when a key lacks it. */
+export const actionScope = (action: PendingAction): string => (action.kind === "phoenixOnboard" ? "phoenix/onboard" : toActionRequest(action).action);
+
+/** Runs a confirmed action. Phoenix onboarding has its own SDK path; everything else is a builder. */
+export function executeAction(api: HedgeClient, action: PendingAction, signer: TransactionSigner, options: ExecuteOptions): Promise<Outcome> {
+  return action.kind === "phoenixOnboard" ? api.onboardPhoenix(action.vault, signer, options) : api.execute(toActionRequest(action), signer, options);
+}
+
+export function toActionRequest(action: Exclude<PendingAction, { kind: "phoenixOnboard" }>): ActionRequest {
   switch (action.kind) {
     case "swap":
       return {
@@ -88,5 +139,40 @@ export function toActionRequest(action: PendingAction): ActionRequest {
         shape: action.liquidity.shape,
         maxActiveBinSlippage: MAX_ACTIVE_BIN_SLIPPAGE,
       };
+    case "dlmmInit":
+      return { action: "dlmm/initialize", vault: action.vault, lbPair: action.lbPair, lowerBinId: action.lowerBinId, upperBinId: action.upperBinId };
+    case "dlmmClose":
+      return { action: "dlmm/close", vault: action.vault, position: action.position };
+    case "jupiterInit":
+      return { action: "jupiter/initialize", vault: action.vault, targetMint: action.token.mint };
+    case "phoenixInit":
+      return { action: "phoenix/initialize", vault: action.vault };
+    case "phoenixDeposit":
+      return { action: "phoenix/deposit", vault: action.vault, amount: action.amountBaseUnits };
+    case "phoenixWithdraw":
+      return { action: "phoenix/withdraw", vault: action.vault, amount: action.amountBaseUnits };
+    case "phoenixOrder":
+      return { action: "phoenix/order", vault: action.vault, ...action.order };
+    case "phoenixCancel":
+      return { action: "phoenix/cancel", vault: action.vault, symbol: action.symbol, orders: "all" };
+    case "phoenixSweep":
+      return { action: "phoenix/sweep", vault: action.vault };
+    case "vaultCreate":
+      return {
+        action: "vault/initialize",
+        name: action.name,
+        depositMint: action.deposit.mint,
+        performanceFeeBps: action.performanceFeeBps,
+        managementFeeBps: action.managementFeeBps,
+        depositCap: action.depositCap,
+        minDeposit: action.minDeposit,
+        minWithdrawalShares: action.minWithdrawalShares,
+      };
+    case "vaultUpdate":
+      return { action: "vault/update", vault: action.vault, ...action.changes };
+    case "vaultClaimFee":
+      return { action: "vault/claim-fee", vault: action.vault };
+    case "vaultClose":
+      return { action: "vault/close", vault: action.vault };
   }
 }

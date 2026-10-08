@@ -1,4 +1,4 @@
-import type { Holdings, PoolInfo, PoolSearchPage, Quote, Strategy, VaultSummary } from "@hedginvault/sdk";
+import type { Holdings, NavHistoryPoint, PhoenixManager, PoolInfo, PoolSearchPage, Quote, RequestQueue, Strategy, StrategyHistoryItem, VaultDetail, VaultSummary } from "@hedginvault/sdk";
 
 export const VAULT = "Vau1t111111111111111111111111111111111111111";
 export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -74,3 +74,92 @@ export const quote: Quote = {
   routeLabels: ["Meteora DLMM", "Whirlpool"],
   slippageBps: 50,
 };
+
+export const vaultDetail: VaultDetail = {
+  ...vaultSummary,
+  status: "normal",
+  id: "7",
+  navPerShare: "1020000000",
+  depositCap: "1000000000",
+  performanceFeeBps: 1000,
+  managementFeeBps: 200,
+  lastNavTs: 1_790_000_000,
+  authority: "Auth111111111111111111111111111111111111111",
+  shareMint: "Share11111111111111111111111111111111111111",
+  shareSupply: "1470000",
+  idleBalance: "1000000",
+  unmanagedHoldings: [],
+  pendingDeposits: "5000000",
+  pendingWithdrawalShares: "2000000",
+  unclaimedManagerFeeShares: "500000",
+  unclaimedPlatformFeeShares: "0",
+  epochOutflow: "0",
+  highWaterMark: "1020000000",
+  navEpoch: "124",
+  minDeposit: "10000000",
+  minWithdrawalShares: "1000000",
+  depositPaused: false,
+  withdrawalPaused: true,
+  pendingPerformanceFeeBps: 1000,
+  pendingManagementFeeBps: 200,
+  feeEffectiveTs: 0,
+  openStrategyCount: 3,
+  protocol: { status: "normal", maxEpochOutflowBps: 2000, maxSlippageBps: 300 },
+};
+
+export const navHistory: NavHistoryPoint[] = [
+  { epoch: 123, ts: 1_790_006_400, totalAssets: "1400000", navPerShare: "1000000000", highWaterMark: "1000000000", overridden: false },
+  { epoch: 124, ts: 1_790_020_800, totalAssets: "1500000", navPerShare: "1020000000", highWaterMark: "1020000000", overridden: true },
+];
+
+export const requestQueue: RequestQueue = {
+  deposits: [{ owner: "Owner11111111111111111111111111111111111111", epoch: "124", createdTs: 1_790_021_000, state: "pending", cancellable: true, amount: "5000000" }],
+  withdrawals: [{ owner: "Owner22222222222222222222222222222222222222", epoch: "123", createdTs: 1_790_010_000, state: "resolvable", cancellable: false, shares: "2000000" }],
+};
+
+export const strategyHistory: StrategyHistoryItem[] = [
+  {
+    strategy: "Closed1111111111111111111111111111111111111",
+    id: 4,
+    type: "dlmm",
+    protocolAccount: null,
+    openedTs: 1_790_000_000,
+    closedTs: 1_790_020_800,
+    openSignature: null,
+    closeSignature: "5igCLoseSig1111111111111111111111111111111111111111111111111111111111111111111111111",
+    exact: false,
+    tokens: [
+      { mint: USDC, symbol: "USDC", decimals: 6, contributed: "3000000", returned: "2500000", feesGross: "0", feesTreasury: "0", feesRetained: "0", realizedPnl: "-500000" },
+      { mint: SOL, symbol: "SOL", decimals: 9, contributed: "0", returned: "10000000", feesGross: "0", feesTreasury: "0", feesRetained: "0", realizedPnl: "10000000" },
+    ],
+  },
+];
+
+const phoenixMarkets: PhoenixManager["markets"] = [
+  { symbol: "SOL", name: "SOL-PERP", category: "major", maxLeverage: 20, markPrice: "150.25", tickSize: 0.01, baseLotsDecimals: 3, takerFee: 0.00035, makerFee: 0 },
+  { symbol: "BTC", name: "BTC-PERP", category: "major", maxLeverage: 20, markPrice: "0", tickSize: 1, baseLotsDecimals: 4, takerFee: 0.00035, makerFee: 0 },
+];
+
+export const phoenixReady: PhoenixManager = {
+  status: "ready",
+  usdcVault: true,
+  traderAccount: "Trader1111111111111111111111111111111111111",
+  markets: phoenixMarkets,
+  openOrders: [
+    { symbol: "SOL", side: "long", price: "140", size: "0.5", priceInTicks: "14000", orderSequenceNumber: "9", reduceOnly: false },
+    { symbol: "SOL", side: "short", price: "170", size: "0.25", priceInTicks: "17000", orderSequenceNumber: "10", reduceOnly: true },
+  ],
+  withdrawable: "4000000",
+  account: {
+    collateral: "5000000",
+    equity: "5250000",
+    initialMargin: "1000000",
+    maintenanceMargin: "500000",
+    withdrawable: "4000000",
+    riskState: "healthy",
+    liquidationPrices: { SOL: "98.5" },
+  },
+};
+
+export const phoenixNone: PhoenixManager = { ...phoenixReady, status: "none", openOrders: null, withdrawable: null, account: null };
+export const phoenixRegistered: PhoenixManager = { ...phoenixNone, status: "registered" };

@@ -24,10 +24,37 @@ export type FormOp =
   | { op: "pool"; index: number }
   | { op: "range"; bps: number }
   | { op: "quote" }
-  | { op: "review" };
+  | { op: "review" }
+  /** LP form: create the position without liquidity. */
+  | { op: "empty" }
+  | { op: "market"; index: number }
+  | { op: "orderType" }
+  | { op: "postOnly" }
+  | { op: "reduceOnly" }
+  | { op: "usdc" };
 
-export type TextField = "token" | "amount" | "slippage" | "pool" | "minPrice" | "maxPrice" | "amountX" | "amountY";
-const TEXT_FIELDS: readonly TextField[] = ["token", "amount", "slippage", "pool", "minPrice", "maxPrice", "amountX", "amountY"];
+// Append only: callback data carries a field's index.
+const TEXT_FIELDS = [
+  "token",
+  "amount",
+  "slippage",
+  "pool",
+  "minPrice",
+  "maxPrice",
+  "amountX",
+  "amountY",
+  "symbol",
+  "size",
+  "price",
+  "orderSlippage",
+  "name",
+  "performanceFee",
+  "managementFee",
+  "depositCap",
+  "minDeposit",
+  "minWithdrawalShares",
+] as const;
+export type TextField = (typeof TEXT_FIELDS)[number];
 
 export type Screen =
   | { kind: "vaults" }
@@ -36,6 +63,17 @@ export type Screen =
   | { kind: "strategies"; vault: string }
   | { kind: "newSwap"; vault: string }
   | { kind: "newLp"; vault: string }
+  | { kind: "navHistory"; vault: string }
+  | { kind: "requests"; vault: string }
+  | { kind: "strategyHistory"; vault: string }
+  | { kind: "settings"; vault: string }
+  | { kind: "editSettings"; vault: string }
+  | { kind: "phoenix"; vault: string }
+  | { kind: "phoenixDeposit"; vault: string }
+  | { kind: "phoenixWithdraw"; vault: string }
+  | { kind: "newOrder"; vault: string }
+  | { kind: "trackToken"; vault: string }
+  | { kind: "newVault" }
   | { kind: "position"; refId: string }
   | { kind: "addLp"; refId: string }
   | { kind: "form"; formId: string }
@@ -97,7 +135,14 @@ function encodeOp(op: FormOp): string {
     case "shape":
     case "quote":
     case "review":
+    case "empty":
+    case "orderType":
+    case "postOnly":
+    case "reduceOnly":
+    case "usdc":
       return op.op;
+    case "market":
+      return `mk${op.index}`;
     case "slippage":
       return `sl${op.bps}`;
     case "share":
@@ -113,9 +158,12 @@ function encodeOp(op: FormOp): string {
   }
 }
 
+const PLAIN_OPS = ["side", "shape", "quote", "review", "empty", "orderType", "postOnly", "reduceOnly", "usdc"] as const;
+export const MAX_MARKET_BUTTONS = 16;
+
 function decodeOp(text: string): FormOp | undefined {
-  if (text === "side" || text === "shape" || text === "quote" || text === "review") return { op: text };
-  const match = /^(sl|sh|rg|ask|tk|pl)(\d{1,5})$/.exec(text);
+  for (const plain of PLAIN_OPS) if (text === plain) return { op: plain };
+  const match = /^(sl|sh|rg|ask|tk|pl|mk)(\d{1,5})$/.exec(text);
   if (!match) return undefined;
   const n = Number(match[2]);
   switch (match[1]) {
@@ -133,11 +181,29 @@ function decodeOp(text: string): FormOp | undefined {
       return n < 20 ? { op: "token", index: n } : undefined;
     case "pl":
       return n < 20 ? { op: "pool", index: n } : undefined;
+    case "mk":
+      return n < MAX_MARKET_BUTTONS ? { op: "market", index: n } : undefined;
   }
   return undefined;
 }
 
-const VAULT_SCREENS = { v: "vault", h: "holdings", s: "strategies", ns: "newSwap", nl: "newLp" } as const;
+const VAULT_SCREENS = {
+  v: "vault",
+  h: "holdings",
+  s: "strategies",
+  ns: "newSwap",
+  nl: "newLp",
+  nh: "navHistory",
+  rq: "requests",
+  sy: "strategyHistory",
+  st: "settings",
+  se: "editSettings",
+  px: "phoenix",
+  pd: "phoenixDeposit",
+  pw: "phoenixWithdraw",
+  po: "newOrder",
+  tt: "trackToken",
+} as const;
 const STORE_SCREENS = { p: "position", al: "addLp", f: "form", q: "swapQuote", c: "confirm", x: "execute" } as const;
 const WALLET_SCREENS = { w: "wallet", ws: "wallets", wn: "walletNew", wi: "walletImport", wk: "walletApiKey", we: "walletExport", wx: "walletReveal" } as const;
 const WALLET_ID_SCREENS = { wu: "walletUse", wr: "walletRemove", wd: "walletRemoved" } as const;
@@ -153,11 +219,23 @@ export function encodeScreen(screen: Screen): string {
   switch (screen.kind) {
     case "vaults":
       return "vaults";
+    case "newVault":
+      return "newVault";
     case "vault":
     case "holdings":
     case "strategies":
     case "newSwap":
     case "newLp":
+    case "navHistory":
+    case "requests":
+    case "strategyHistory":
+    case "settings":
+    case "editSettings":
+    case "phoenix":
+    case "phoenixDeposit":
+    case "phoenixWithdraw":
+    case "newOrder":
+    case "trackToken":
       return `${prefixOf<VaultScreenKind>(VAULT_SCREENS, screen.kind)}:${screen.vault}`;
     case "position":
     case "addLp":
@@ -188,6 +266,7 @@ export function encodeScreen(screen: Screen): string {
 /** Callback data arrives from the client, so anything unexpected decodes to undefined. */
 export function decodeScreen(data: string): Screen | undefined {
   if (data === "vaults") return { kind: "vaults" };
+  if (data === "newVault") return { kind: "newVault" };
   if (Object.hasOwn(WALLET_SCREENS, data)) return { kind: WALLET_SCREENS[data as keyof typeof WALLET_SCREENS] };
   const wallet = new RegExp(`^(${Object.keys(WALLET_ID_SCREENS).join("|")}):(${STORE_ID})$`).exec(data);
   if (wallet) return { kind: WALLET_ID_SCREENS[wallet[1] as keyof typeof WALLET_ID_SCREENS], walletId: wallet[2] as string };
@@ -201,7 +280,7 @@ export function decodeScreen(data: string): Screen | undefined {
     if (kind === "form" || kind === "swapQuote") return { kind, formId: id };
     return { kind, actionId: id };
   }
-  const formOp = new RegExp(`^o:(${STORE_ID}):(\\w{2,8})$`).exec(data);
+  const formOp = new RegExp(`^o:(${STORE_ID}):(\\w{2,10})$`).exec(data);
   const op = formOp && decodeOp(formOp[2] as string);
   return formOp && op ? { kind: "formOp", formId: formOp[1] as string, op } : undefined;
 }
