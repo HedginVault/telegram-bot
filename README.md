@@ -48,7 +48,7 @@ commands below also work.
 | --- | --- |
 | `/wallet` | Import, create, export, or switch wallets |
 | `/vaults` | Numbered list of vaults the active wallet manages |
-| `/holdings <vault>` | Live value, last NAV, and per-token exposure |
+| `/holdings <vault>` | Vault overview: live value vs last NAV, per-token exposure, open LP and perps positions |
 | `/strategies <vault>` | Open Jupiter, Meteora DLMM, and Phoenix strategies |
 | `/nav <vault>` | The last 10 posted NAVs, newest first, with admin overrides flagged |
 | `/requests <vault>` | Queued deposits and withdrawals, and whether each can settle yet |
@@ -68,13 +68,13 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | Where | What you set | API builder |
 | --- | --- | --- |
 | Vault → 💱 Swap | Buy or sell · a held token or a pasted contract address · amount (`1.5`, `25%`, `max`) · slippage (0.5 / 1 / 3% or typed, up to the protocol's 3%) | `jupiter/swap` |
-| Vault → ➕ New LP position | Pool (pasted address or symbol search) · shape (Spot / Curve / Bid-Ask) · min and max price (or ±1 / 5 / 10%) · amount of each token | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
+| Vault → ➕ New LP | Pool (pasted address, or symbol search sorted by TVL) · side (X only / both / Y only) · shape (Spot / Curve / Bid-Ask) · range preset per side or typed min and max price · amount of each token the range can hold | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
 | DLMM position → ➕ Add liquidity | Shape · amount of each token | `dlmm/add` |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
 | DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
 | DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
-| Vault → ➕ New LP position | Pool · min and max price (up to 70 bins) · 🫙 Empty position only | `dlmm/initialize` |
+| Vault → ➕ New LP | Pool · range (up to 70 bins) · 🫙 Empty position | `dlmm/initialize` |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
 | Strategies → ➕ Track token | A pasted contract address (Jupiter verification shown) | `jupiter/initialize` |
 | Vault → 📈 Phoenix | 🚀 Set up Phoenix (shown when the vault has no Phoenix strategy) | `phoenix/initialize` |

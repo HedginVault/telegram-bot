@@ -137,16 +137,16 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz#b21affb804cc167c133d95f45b3a1dc1323b9a87"
   integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
 
-"@hedginvault/sdk@file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz":
+"@hedginvault/sdk@file:./vendor/hedginvault-sdk-0adffd0b1e8b.tgz":
   version "0.1.0"
-  resolved "file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz#6a3f2ec92ee62d1049ec140b739fd4f4c401077d"
+  resolved "file:./vendor/hedginvault-sdk-0adffd0b1e8b.tgz#8687ecd653a8f7d4bedd05615d7e593e8181df72"
   dependencies:
     bs58 "4.0.1"
     zod "^3.23"
 
-"@hedginvault/sdk@file:./vendor/hedginvault-sdk-f744ebc74b6c.tgz":
+"@hedginvault/sdk@file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz":
   version "0.1.0"
-  resolved "file:./vendor/hedginvault-sdk-f744ebc74b6c.tgz#d9a0bb01cb4ed002764f73210d3c3fa7a7c6272f"
+  resolved "file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz#6a3f2ec92ee62d1049ec140b739fd4f4c401077d"
   dependencies:
     bs58 "4.0.1"
     zod "^3.23"

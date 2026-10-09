@@ -16,7 +16,10 @@ export interface PositionRef {
 /** What a form button does; encoded into callback data after the form id. */
 export type FormOp =
   | { op: "side" }
-  | { op: "shape" }
+  /** LP form: pick `SHAPES[index]`. */
+  | { op: "shape"; index: number }
+  /** LP form: pick `LP_SIDES[index]`. */
+  | { op: "lpSide"; index: number }
   | { op: "slippage"; bps: number }
   | { op: "share"; bps: number }
   | { op: "ask"; field: TextField }
@@ -59,7 +62,6 @@ export type TextField = (typeof TEXT_FIELDS)[number];
 export type Screen =
   | { kind: "vaults" }
   | { kind: "vault"; vault: string }
-  | { kind: "holdings"; vault: string }
   | { kind: "strategies"; vault: string }
   | { kind: "newSwap"; vault: string }
   | { kind: "newLp"; vault: string }
@@ -132,7 +134,6 @@ const STORE_ID = "[A-Za-z0-9_-]{11}";
 function encodeOp(op: FormOp): string {
   switch (op.op) {
     case "side":
-    case "shape":
     case "quote":
     case "review":
     case "empty":
@@ -155,15 +156,19 @@ function encodeOp(op: FormOp): string {
       return `tk${op.index}`;
     case "pool":
       return `pl${op.index}`;
+    case "shape":
+      return `sp${op.index}`;
+    case "lpSide":
+      return `ls${op.index}`;
   }
 }
 
-const PLAIN_OPS = ["side", "shape", "quote", "review", "empty", "orderType", "postOnly", "reduceOnly", "usdc"] as const;
+const PLAIN_OPS = ["side", "quote", "review", "empty", "orderType", "postOnly", "reduceOnly", "usdc"] as const;
 export const MAX_MARKET_BUTTONS = 16;
 
 function decodeOp(text: string): FormOp | undefined {
   for (const plain of PLAIN_OPS) if (text === plain) return { op: plain };
-  const match = /^(sl|sh|rg|ask|tk|pl|mk)(\d{1,5})$/.exec(text);
+  const match = /^(sl|sh|rg|ask|tk|pl|mk|sp|ls)(\d{1,5})$/.exec(text);
   if (!match) return undefined;
   const n = Number(match[2]);
   switch (match[1]) {
@@ -183,13 +188,17 @@ function decodeOp(text: string): FormOp | undefined {
       return n < 20 ? { op: "pool", index: n } : undefined;
     case "mk":
       return n < MAX_MARKET_BUTTONS ? { op: "market", index: n } : undefined;
+    // Three DLMM shapes and three LP sides; forms.ts owns the lists.
+    case "sp":
+      return n < 3 ? { op: "shape", index: n } : undefined;
+    case "ls":
+      return n < 3 ? { op: "lpSide", index: n } : undefined;
   }
   return undefined;
 }
 
 const VAULT_SCREENS = {
   v: "vault",
-  h: "holdings",
   s: "strategies",
   ns: "newSwap",
   nl: "newLp",
@@ -222,7 +231,6 @@ export function encodeScreen(screen: Screen): string {
     case "newVault":
       return "newVault";
     case "vault":
-    case "holdings":
     case "strategies":
     case "newSwap":
     case "newLp":
@@ -300,3 +308,6 @@ export const keyboard = (rows: Button[][]) => Markup.inlineKeyboard(rows).reply_
 export const homeButton = () => button("🏦 Vaults", { kind: "vaults" });
 export const walletButton = () => button("👛 Wallet", { kind: "wallet" });
 export const formButton = (text: string, formId: string, op: FormOp) => button(text, { kind: "formOp", formId, op });
+/** Lays buttons out `perRow` to a row. */
+export const rowsOf = (buttons: Button[], perRow: number): Button[][] =>
+  Array.from({ length: Math.ceil(buttons.length / perRow) }, (_, row) => buttons.slice(row * perRow, (row + 1) * perRow));

@@ -187,7 +187,7 @@ describe("bot", () => {
     const { send, replies, parseModes } = setup();
     await send("/vaults");
     expect(replies).toHaveLength(1);
-    expect(replies[0]).toContain(`<b>1. Demo</b> · 🟢 normal\n<code>${VAULT}</code>`);
+    expect(replies[0]).toContain(`<b>1. Demo</b> · 🟢 normal\n└ <b>1.5 USDC</b> · <a href="https://solscan.io/account/${VAULT}">Vau1…1111 ↗</a>`);
     expect(parseModes).toEqual(["HTML"]);
   });
 
@@ -207,7 +207,7 @@ describe("bot", () => {
     await send("/holdings test vault");
     expect(api.getHoldings).toHaveBeenCalledTimes(2);
     expect(api.getStrategies).toHaveBeenCalledWith(VAULT);
-    expect(replies[0]).toMatch(/^📊 <b>Test Vault<\/b> · holdings/);
+    expect(replies[0]).toMatch(/^🏦 <b>Test Vault<\/b> · 🟢 normal/);
   });
 
   it("explains an unknown vault instead of calling the vault API", async () => {
@@ -220,12 +220,12 @@ describe("bot", () => {
 
   it("shows the API's own error code and message", async () => {
     const { send, replies } = setup({
-      getHoldings: vi.fn(async () => {
+      getStrategies: vi.fn(async () => {
         throw new ApiError(403, "Forbidden", "Manager is not the current vault authority");
       }),
     });
     vi.spyOn(console, "error").mockImplementation(() => undefined);
-    await send("/holdings 1");
+    await send("/strategies 1");
     expect(replies).toEqual(["❌ <b>API error 403 (Forbidden)</b>\nManager is not the current vault authority"]);
   });
 });
@@ -240,33 +240,42 @@ describe("buttons", () => {
     expect(buttons().map((b) => b.text)).toEqual(["1. Demo", "✨ Create vault", "🔄 Refresh", "👛 Wallet"]);
   });
 
-  it("walks vault → holdings → back by tapping, editing one message", async () => {
-    const { send, click, buttons, lastScreen, calls } = setup();
+  it("walks vault → strategies → back by tapping, editing one message", async () => {
+    const { send, click, buttons, lastScreen, calls, api } = setup();
     await send("/start");
     await click("1. Demo");
+    expect(api.getHoldings).toHaveBeenCalledWith(VAULT);
+    expect(lastScreen().text).toContain("💰 <b>2.5 USDC</b> ≈ $2.50 · vs NAV 🟢 +4.17%");
     expect(buttons().map((b) => b.text)).toEqual([
-      "📊 Holdings",
-      "🧩 Strategies",
       "💱 Swap",
-      "➕ New LP position",
+      "➕ New LP",
+      "🧩 Strategies",
+      "📈 Phoenix",
       "📊 NAV history",
       "📋 Requests",
-      "🗂 Strategy history",
-      "📈 Phoenix",
+      "🗂 History",
       "⚙️ Settings",
+      "🔄 Refresh",
       "🏦 Vaults",
     ]);
-    await click("📊 Holdings");
-    expect(lastScreen().text).toMatch(/^📊 <b>Demo<\/b> · holdings/);
+    await click("🧩 Strategies");
+    expect(lastScreen().text).toMatch(/^🧩 <b>Demo<\/b> · strategies/);
     await click("⬅️ Back");
     expect(lastScreen().text).toMatch(/^🏦 <b>Demo<\/b>/);
     expect(calls.filter((c) => c.method === "sendMessage")).toHaveLength(1);
     expect(calls.filter((c) => c.method === "editMessageText")).toHaveLength(3);
   });
 
+  it("lays vault buttons out two to a row", async () => {
+    const { send, lastScreen } = setup({ listVaults: vi.fn(async () => [vaultSummary, { ...vaultSummary, name: "B" }, { ...vaultSummary, name: "C" }]) });
+    await send("/start");
+    const rows = lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text));
+    expect(rows?.slice(0, 2)).toEqual([["1. Demo", "2. B"], ["3. C"]]);
+  });
+
   it("ignores taps from users outside the allowlist", async () => {
     const { tap, calls, api } = setup();
-    await tap(`h:${VAULT}`, 7);
+    await tap(`v:${VAULT}`, 7);
     expect(calls).toEqual([]);
     expect(api.getHoldings).not.toHaveBeenCalled();
   });
@@ -317,7 +326,7 @@ describe("swap form", () => {
     await click("⚡ Swap USDC → PASTED");
     expect(lastScreen().text).toContain("<b>Swap 0.5 USDC → PASTED</b>");
     expect(lastScreen().text).toContain("Jupiter has not verified this token");
-    await click("✅ Confirm and send");
+    await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: USDC, destinationMint: MINT, amount: "500000", slippageBps: 300 });
     expect(lastScreen().text).toContain("<b>Done.</b> 1 transaction(s) confirmed.");
@@ -398,7 +407,7 @@ describe("trading", () => {
     const ui = setup(tradingApi());
     await openSwapQuote(ui);
     await ui.click("⚡ Swap SOL → USDC");
-    const confirm = ui.buttons().find((b) => b.text === "✅ Confirm and send")?.callback_data ?? "";
+    const confirm = ui.buttons().find((b) => b.text === "✅ Confirm & send")?.callback_data ?? "";
     await ui.tap(confirm);
     await ui.settle();
     await ui.tap(confirm);
@@ -419,9 +428,9 @@ describe("trading", () => {
     const claim = buttons().find((b) => b.text === "💰 Claim fees")?.callback_data ?? "";
     const remove = buttons().find((b) => b.text === "➖ 50%")?.callback_data ?? "";
     await tap(claim);
-    await click("✅ Confirm and send");
+    await click("✅ Confirm & send");
     await tap(remove);
-    await tap(buttons().find((b) => b.text === "✅ Confirm and send")?.callback_data ?? "");
+    await tap(buttons().find((b) => b.text === "✅ Confirm & send")?.callback_data ?? "");
     expect(alerts()).toContain("Another transaction is still running. Wait for it to finish.");
     release();
     await settle();
@@ -439,7 +448,7 @@ describe("trading", () => {
     await click("🧩 Strategies");
     await click("⚙️ SOL/USDC position");
     await click(label);
-    await click("✅ Confirm and send");
+    await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith(action, body);
   });
@@ -452,7 +461,7 @@ describe("trading", () => {
     await click("1. Demo");
     await click("🧩 Strategies");
     await click("🗑 Close empty BONK strategy");
-    await click("✅ Confirm and send");
+    await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith("strategy/close", { vault: VAULT, strategy: "StratJup" });
   });
@@ -465,7 +474,7 @@ describe("trading", () => {
     const ui = setup(api);
     await openSwapQuote(ui);
     await ui.click("⚡ Swap SOL → USDC");
-    await ui.click("✅ Confirm and send");
+    await ui.click("✅ Confirm & send");
     await ui.settle();
     expect(ui.lastScreen().text).toContain("<b>Failed</b> (JupiterUnsupportedCpiRoute): Service temporarily unavailable");
     expect(ui.lastScreen().text).toContain("<i>Jupiter picked a route the vault program cannot run. Try a different amount or token, or try again shortly.</i>");
@@ -479,7 +488,7 @@ describe("trading", () => {
     await click("🧩 Strategies");
     await click("⚙️ SOL/USDC position");
     await click("💰 Claim fees");
-    await click("✅ Confirm and send");
+    await click("✅ Confirm & send");
     await settle();
     expect(api.send).not.toHaveBeenCalled();
     expect(lastScreen().text).toMatch(/^🛑 /);
@@ -493,7 +502,7 @@ describe("LP form", () => {
   async function newPosition(ui: ReturnType<typeof setup>) {
     await ui.send("/start");
     await ui.click("1. Demo");
-    await ui.click("➕ New LP position");
+    await ui.click("➕ New LP");
   }
 
   it("opens a pasted pool with a custom shape, price range, and two-sided sizing", async () => {
@@ -501,20 +510,21 @@ describe("LP form", () => {
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     expect(ui.api.getPool).toHaveBeenCalledWith(VAULT, POOL);
-    expect(ui.lastScreen().text).toContain("Pool <b>SOL/USDC</b> · 10 bps bins");
-    await ui.click("📐 Shape: Spot · tap to change");
-    await ui.click("📐 Shape: Curve · tap to change");
-    await ui.fill("⬇️ Min price", "148");
-    await ui.fill("⬆️ Max price", "152");
-    expect(ui.lastScreen().text).toContain("Shape Bid-Ask");
-    expect(ui.lastScreen().text).toContain("<i>29 bins, 147.9157 to 152.1137; holds both tokens.</i>");
+    // A pasted pool has no search result, so no fee is known.
+    expect(ui.lastScreen().text).toMatch(/^🎯 <b>SOL\/USDC<\/b> · bin 10\n/);
+    await ui.click("🔻 Bid-Ask");
+    await ui.fill("✏️ Min price", "148");
+    await ui.fill("✏️ Max price", "152");
+    expect(ui.lastScreen().text).toContain("⚖️ <b>Both sides</b> · Bid-Ask · custom");
+    expect(ui.lastScreen().text).toContain("<i>29 bins · holds both tokens</i>");
     await ui.fill("💧 SOL amount", "0.005");
     await ui.fill("💧 USDC amount", "50%");
-    expect(ui.lastScreen().text).toContain("SOL 0.005 SOL · vault has 0.01 SOL");
+    expect(ui.lastScreen().text).toContain("<b>Deposit</b>\n├ SOL 0.005\n└ USDC 0.5 (50% of balance)");
     await ui.click("✅ Review");
-    expect(ui.lastScreen().text).toContain("<b>Open a SOL/USDC position with 0.005 SOL + 0.5 USDC</b>");
-    expect(ui.lastScreen().text).toContain("Range 147.9157 to 152.1137 · 29 bins · Bid-Ask");
-    await ui.click("✅ Confirm and send");
+    expect(ui.lastScreen().text).toContain(
+      ["<b>Open SOL/USDC LP</b>", "├ Deposit 0.005 SOL + 0.5 USDC", "├ Range 147.9157 → 152.1137", "├ Bins 29 · Bid-Ask", "└ Transactions ~1"].join("\n"),
+    );
+    await ui.click("✅ Confirm & send");
     await ui.settle();
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/open", {
       vault: VAULT,
@@ -528,29 +538,91 @@ describe("LP form", () => {
     });
   });
 
-  it("searches pools by symbol and keeps only pools with the deposit token", async () => {
+  it("lists matching pools by TVL with fee and volume, and keeps only pools with the deposit token", async () => {
     const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", "sol");
     expect(ui.api.searchPools).toHaveBeenCalledWith(VAULT, "sol");
-    expect(ui.buttons().map((b) => b.text)).toContain("SOL/USDC · 10 bps");
-    expect(ui.buttons().map((b) => b.text)).not.toContain("SOL/BONK · 80 bps");
-    await ui.click("SOL/USDC · 10 bps");
-    expect(ui.lastScreen().text).toContain("Pool <b>SOL/USDC</b>");
+    expect(ui.lastScreen().text).toBe(
+      [
+        "➕ <b>New LP position</b> · pick a pool",
+        '<i>Results for "sol" · paired with USDC</i>',
+        "",
+        "<b>1. SOL/USDC</b> · fee 0.1% · bin 10",
+        "└ TVL $1.25M · Vol 24h $340K",
+        "",
+        "<b>2. SOL/USDC</b> · bin 80",
+        "└ TVL $3.4K · Vol 24h n/a",
+      ].join("\n"),
+    );
+    const rows = ui.lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text));
+    expect(rows?.[0]).toEqual(["1. SOL/USDC · 0.1%", "2. SOL/USDC · bin 80"]);
+    expect(ui.buttons().some((b) => b.text.includes("BONK"))).toBe(false);
+    await ui.click("1. SOL/USDC · 0.1%");
+    expect(ui.api.getPool).toHaveBeenCalledWith(VAULT, POOL);
+    expect(ui.lastScreen().text).toMatch(/^🎯 <b>SOL\/USDC<\/b> · fee 0.1% · bin 10\n/);
   });
 
   it("offers only the token a one-sided range can hold and checks balances at review", async () => {
     const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
-    await ui.fill("⬇️ Min price", "140");
-    await ui.fill("⬆️ Max price", "149");
+    await ui.fill("✏️ Min price", "140");
+    await ui.fill("✏️ Max price", "149");
     expect(ui.lastScreen().text).toContain("holds only USDC");
+    // A typed range picks its side, so the side buttons follow it.
+    expect(ui.buttons().map((b) => b.text)).toContain("🎯 USDC only ✅");
     expect(ui.buttons().map((b) => b.text)).not.toContain("💧 SOL amount");
     await ui.fill("💧 USDC amount", "2");
     await ui.click("✅ Review");
     expect(ui.alerts()).toContain("That is more than the vault holds.");
     expect(ui.api.build).not.toHaveBeenCalled();
+  });
+
+  it("switches sides with their own presets, marks the choice, and clears what a side cannot hold", async () => {
+    const ui = setup(tradingApi());
+    await newPosition(ui);
+    await ui.fill("🏊 Pick pool", POOL);
+    const labels = () => ui.buttons().map((b) => b.text);
+    expect(labels()).toEqual(expect.arrayContaining(["⚖️ Both ✅", "▬ Spot ✅", "±5% ✅", "💧 SOL amount", "💧 USDC amount"]));
+    await ui.fill("💧 USDC amount", "50%");
+
+    await ui.click("💵 SOL only");
+    expect(ui.lastScreen().text).toContain("💵 <b>SOL only</b> · sell as price rises · Spot · +10%");
+    expect(ui.lastScreen().text).toContain("holds only SOL");
+    expect(ui.lastScreen().text).toContain("<b>Deposit</b>\n└ SOL <i>not set</i>");
+    expect(labels()).toEqual(expect.arrayContaining(["💵 SOL only ✅", "⚖️ Both", "+10% ✅", "+90%", "💧 SOL amount"]));
+    expect(labels()).not.toContain("💧 USDC amount");
+
+    await ui.click("⚖️ Both");
+    expect(ui.lastScreen().text).toContain("└ USDC <i>not set</i>");
+
+    await ui.click("🎯 USDC only");
+    expect(ui.lastScreen().text).toContain("🎯 <b>USDC only</b> · buy SOL as price falls · Spot · −10%");
+    expect(ui.lastScreen().text).toContain("holds only USDC");
+    expect(labels()).not.toContain("💧 SOL amount");
+    await ui.click("−20%");
+    expect(labels()).toContain("−20% ✅");
+    expect(labels()).not.toContain("−10% ✅");
+
+    await ui.fill("✏️ Min price", "120");
+    expect(ui.lastScreen().text).toContain("· Spot · custom");
+    expect(labels().filter((label) => /%.*✅$/.test(label))).toEqual([]);
+  });
+
+  it.each([
+    ["💵 SOL only", "💧 SOL amount", { lowerBinId: -99, amountX: "10000000", amountY: "0" }],
+    ["🎯 USDC only", "💧 USDC amount", { upperBinId: -100, amountX: "0", amountY: "1000000" }],
+  ])("opens %s on the bins next to the price", async (side, amountButton, expected) => {
+    const ui = setup(tradingApi());
+    await newPosition(ui);
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click(side);
+    await ui.fill(amountButton, "max");
+    await ui.click("✅ Review");
+    await ui.click("✅ Confirm & send");
+    await ui.settle();
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/open", expect.objectContaining(expected));
   });
 
   it("rejects a pasted pool that does not include the deposit token", async () => {
@@ -567,12 +639,14 @@ describe("LP form", () => {
     await ui.click("🧩 Strategies");
     await ui.click("⚙️ SOL/USDC position");
     await ui.click("➕ Add liquidity");
-    expect(ui.lastScreen().text).toMatch(/^➕ <b>Add liquidity<\/b>/);
-    expect(ui.buttons().map((b) => b.text)).not.toContain("⬇️ Min price");
-    await ui.click("📐 Shape: Spot · tap to change");
+    expect(ui.lastScreen().text).toMatch(/^➕ <b>SOL\/USDC<\/b> · add liquidity · bin 10/);
+    expect(ui.buttons().map((b) => b.text)).not.toContain("✏️ Min price");
+    expect(ui.buttons().map((b) => b.text)).not.toContain("⚖️ Both ✅");
+    await ui.click("⛰ Curve");
     await ui.fill("💧 USDC amount", "max");
     await ui.click("✅ Review");
-    await ui.click("✅ Confirm and send");
+    expect(ui.lastScreen().text).toContain("<b>Add to SOL/USDC LP</b>\n├ Deposit 1 USDC\n└ Shape Curve");
+    await ui.click("✅ Confirm & send");
     await ui.settle();
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/add", {
       vault: VAULT,
@@ -748,7 +822,7 @@ async function openVault(ui: ReturnType<typeof setup>, label?: string) {
 
 /** Confirms the open confirm screen and waits for the action to finish. */
 async function confirm(ui: ReturnType<typeof setup>) {
-  await ui.click("✅ Confirm and send");
+  await ui.click("✅ Confirm & send");
   await ui.settle();
 }
 
@@ -765,6 +839,16 @@ describe("vault reads", () => {
     const { send, replies } = setup();
     await send(command);
     expect(replies.at(-1)?.split("\n")[0]).toBe(title);
+  });
+
+  it("still opens the vault menu when holdings and strategies cannot be read", async () => {
+    const failing = vi.fn(async () => {
+      throw new Error("valuation down");
+    });
+    const ui = setup({ getHoldings: failing, getStrategies: failing });
+    await openVault(ui);
+    expect(ui.lastScreen().text).toContain("TVL <b>1.5 USDC</b>\n<i>⚠️ Live holdings unavailable right now. Tap 🔄 Refresh.</i>");
+    expect(ui.buttons().map((b) => b.text)).toContain("⚙️ Settings");
   });
 
   it("asks for the last 10 NAVs from the vault screen", async () => {
@@ -1086,11 +1170,11 @@ describe("strategy setup", () => {
     const api = tradingApi();
     api.build = vi.fn(async () => [{ ...builtStep(), position: NEW_POSITION }]);
     const ui = setup(api);
-    await openVault(ui, "➕ New LP position");
+    await openVault(ui, "➕ New LP");
     await ui.fill("🏊 Pick pool", POOL);
-    await ui.fill("⬇️ Min price", "148");
-    await ui.fill("⬆️ Max price", "152");
-    await ui.click("🫙 Empty position only");
+    await ui.fill("✏️ Min price", "148");
+    await ui.fill("✏️ Max price", "152");
+    await ui.click("🫙 Empty position");
     expect(ui.lastScreen().text).toContain("<b>Create an empty SOL/USDC position</b>");
     await confirm(ui);
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/initialize", { vault: VAULT, lbPair: POOL, lowerBinId: -114, upperBinId: -85 });
@@ -1099,10 +1183,10 @@ describe("strategy setup", () => {
 
   it("refuses an empty position wider than 70 bins", async () => {
     const ui = setup(tradingApi());
-    await openVault(ui, "➕ New LP position");
+    await openVault(ui, "➕ New LP");
     await ui.fill("🏊 Pick pool", POOL);
     await ui.click("±10%");
-    await ui.click("🫙 Empty position only");
+    await ui.click("🫙 Empty position");
     expect(ui.alerts().at(-1)).toMatch(/^An empty position can span at most 70 bins; this range has \d+\. Narrow it\.$/);
     expect(ui.api.build).not.toHaveBeenCalled();
   });

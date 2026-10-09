@@ -15,7 +15,6 @@ import {
 import {
   STRATEGY_HISTORY_LIMIT,
   confirmMessage,
-  holdingsMessage,
   navHistoryMessage,
   phoenixMessage,
   positionMessage,
@@ -37,6 +36,7 @@ import {
   expired,
   homeButton,
   keyboard,
+  rowsOf,
   walletButton,
 } from "./ui";
 
@@ -80,7 +80,10 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       return {
         html: vaultsMessage(vaults),
         keyboard: keyboard([
-          ...vaults.map((vault, index) => [button(`${index + 1}. ${vault.name}`, { kind: "vault", vault: vault.address })]),
+          ...rowsOf(
+            vaults.map((vault, index) => button(`${index + 1}. ${vault.name}`, { kind: "vault", vault: vault.address })),
+            2,
+          ),
           [button("✨ Create vault", { kind: "newVault" })],
           [button("🔄 Refresh", screen), walletButton()],
         ]),
@@ -89,14 +92,19 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
     case "vault": {
       const vault = await findVault(api, screen.vault);
       const to = (text: string, kind: Extract<Screen, { vault: string }>["kind"]) => button(text, { kind, vault: vault.address });
+      const [holdings, strategies] = await Promise.allSettled([api.getHoldings(vault.address), api.getStrategies(vault.address)]);
       return {
-        html: vaultMessage(vault),
+        html: vaultMessage(
+          vault,
+          holdings.status === "fulfilled" ? holdings.value : undefined,
+          strategies.status === "fulfilled" ? strategies.value : undefined,
+        ),
         keyboard: keyboard([
-          [to("📊 Holdings", "holdings"), to("🧩 Strategies", "strategies")],
-          [to("💱 Swap", "newSwap"), to("➕ New LP position", "newLp")],
+          [to("💱 Swap", "newSwap"), to("➕ New LP", "newLp")],
+          [to("🧩 Strategies", "strategies"), to("📈 Phoenix", "phoenix")],
           [to("📊 NAV history", "navHistory"), to("📋 Requests", "requests")],
-          [to("🗂 Strategy history", "strategyHistory"), to("📈 Phoenix", "phoenix")],
-          [to("⚙️ Settings", "settings"), homeButton()],
+          [to("🗂 History", "strategyHistory"), to("⚙️ Settings", "settings")],
+          [button("🔄 Refresh", screen), homeButton()],
         ]),
       };
     }
@@ -174,13 +182,6 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       const vault = await findVault(api, screen.vault);
       return renderForm(deps.forms.put(await createTrackForm(api, vault.address)), deps);
     }
-    case "holdings": {
-      const vault = await findVault(api, screen.vault);
-      return {
-        html: holdingsMessage(vault, await api.getHoldings(vault.address)),
-        keyboard: keyboard([[button("🔄 Refresh", screen), button("⬅️ Back", { kind: "vault", vault: vault.address })], [homeButton()]]),
-      };
-    }
     case "strategies": {
       const vault = await findVault(api, screen.vault);
       const strategies = await api.getStrategies(vault.address);
@@ -255,8 +256,10 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       return {
         html: confirmMessage(vault, action, freshQuote),
         keyboard: keyboard([
-          [button("✅ Confirm and send", { kind: "execute", actionId: screen.actionId })],
-          [vault ? button("✖️ Cancel", { kind: "vault", vault: vault.address }) : button("✖️ Cancel", { kind: "vaults" })],
+          [
+            button("✅ Confirm & send", { kind: "execute", actionId: screen.actionId }),
+            button("✖️ Cancel", vault ? { kind: "vault", vault: vault.address } : { kind: "vaults" }),
+          ],
         ]),
       };
     }

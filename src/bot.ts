@@ -223,7 +223,7 @@ export function createBot(options: {
   });
 
   const vaultCommands = [
-    ["holdings", "holdings"],
+    ["holdings", "vault"],
     ["strategies", "strategies"],
     ["nav", "navHistory"],
     ["requests", "requests"],

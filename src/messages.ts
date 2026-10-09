@@ -16,6 +16,7 @@ import {
 } from "@hedginvault/sdk";
 import type { Liquidity, PendingAction, VaultChanges } from "./actions";
 import {
+  type AmountInput,
   type LpForm,
   NO_DEPOSIT_CAP,
   type OrderForm,
@@ -27,11 +28,12 @@ import {
   describeAmount,
   formatPrice,
   needsWarning,
+  rangePresetLabel,
   shapeLabel,
   vaultChanges,
 } from "./forms";
 import type { TokenRef } from "./ui";
-import { formatBaseUnits, shortAddress } from "./format";
+import { compactDecimal, compactUnits, compactUsd, feePct, formatBaseUnits, shortAddress } from "./format";
 
 // Telegram counts the limit after parsing entities, so measuring raw HTML is conservative.
 const TELEGRAM_MESSAGE_LIMIT = 4096;
@@ -54,14 +56,12 @@ export function fitMessage(html: string): string {
 
 const amount = (baseUnits: string, decimals: number, symbol: string) =>
   `${formatBaseUnits(baseUnits, decimals)} ${escapeHtml(symbol)}`;
-const usd = (value: number | null) =>
-  value === null ? "no price" : `$${value.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 const percent = (bps: number | null) => (bps === null ? "?" : `${(bps / 100).toFixed(2)}%`);
 const signedPercent = (bps: number | null) => (bps !== null && bps > 0 ? `+${percent(bps)}` : percent(bps));
 const address = (value: string) => `<code>${escapeHtml(value)}</code>`;
 const shortSig = (signature: string) => `${signature.slice(0, 6)}…${signature.slice(-4)}`;
 const txLink = (signature: string) => `<a href="https://solscan.io/tx/${encodeURIComponent(signature)}">${escapeHtml(shortSig(signature))}</a>`;
-const solscan = (value: string) => `<a href="https://solscan.io/account/${encodeURIComponent(value)}">Solscan</a>`;
+const solscanShort = (value: string) => `<a href="https://solscan.io/account/${encodeURIComponent(value)}">${escapeHtml(shortAddress(value))} ↗</a>`;
 /** Signed base units (a loss, negative equity) without going through `number`. */
 const signedAmount = (baseUnits: string, decimals: number, symbol: string) =>
   baseUnits.startsWith("-") ? `-${amount(baseUnits.slice(1), decimals, symbol)}` : amount(baseUnits, decimals, symbol);
@@ -77,12 +77,41 @@ const utc = (seconds: number) => `${new Date(seconds * 1000).toISOString().slice
 /** Prefixes rows with tree branches so related facts stack vertically under a heading. */
 const tree = (rows: string[]) => rows.map((row, index) => `${index === rows.length - 1 ? "└" : "├"} ${row}`);
 const BAR_CELLS = 10;
-/** A 10-cell share bar in monospace so bars line up; null shares get no bar. */
-const bar = (bps: number | null) => {
-  if (bps === null) return "";
+const barCells = (bps: number) => {
   const filled = Math.min(BAR_CELLS, Math.max(0, Math.round((bps * BAR_CELLS) / 10_000)));
-  return `<code>${"█".repeat(filled)}${"░".repeat(BAR_CELLS - filled)}</code>`;
+  return `${"█".repeat(filled)}${"░".repeat(BAR_CELLS - filled)}`;
 };
+/** A 10-cell share bar in monospace so bars line up; null shares get no bar. */
+const bar = (bps: number | null) => (bps === null ? "" : `<code>${barCells(bps)}</code>`);
+/** Separates the parts of a receipt-style screen. */
+const DIVIDER = "━━━━━━━━━━━━";
+/** Short amount with its symbol, for lists. */
+const compact = (baseUnits: string, decimals: number, symbol: string) => `${compactUnits(baseUnits, decimals)} ${escapeHtml(symbol)}`;
+/** An API price string trimmed for display. */
+const price = (value: string) => escapeHtml(compactDecimal(value));
+const shareText = (bps: number) => `${(bps / 100).toFixed(1)}%`;
+
+const GAUGE_CELLS = 10;
+/**
+ * A price range as a track with the price on it: `├───●──────┤`. Out of range, an arrow sits
+ * on the edge the price left from. Display only, so plain numbers are fine.
+ */
+export function rangeGauge(lower: number, active: number, upper: number): string {
+  const cells = Array.from({ length: GAUGE_CELLS }, () => "─");
+  if (Number.isFinite(lower) && Number.isFinite(active) && Number.isFinite(upper) && upper > lower) {
+    if (active < lower) cells[0] = "◀";
+    else if (active > upper) cells[GAUGE_CELLS - 1] = "▶";
+    else cells[Math.round(((active - lower) / (upper - lower)) * (GAUGE_CELLS - 1))] = "●";
+  }
+  return `├${cells.join("")}┤`;
+}
+
+type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
+/** Display only: compares the API's decimal price strings as numbers. */
+const inRange = (s: DlmmStrategy) => Number(s.lowerPrice) <= Number(s.activePrice) && Number(s.activePrice) <= Number(s.upperPrice);
+const rangeStatus = (s: DlmmStrategy) => (inRange(s) ? "🟢 in range" : "🟠 out of range");
+const pair = (x: TokenRef, y: TokenRef) => `${escapeHtml(x.symbol)}/${escapeHtml(y.symbol)}`;
+const leverage = (value: number | null) => (value === null ? "n/a" : `${value.toFixed(2)}x`);
 const SPARK = "▁▂▃▄▅▆▇█";
 /** One block per value, scaled between the smallest and largest, oldest first. */
 const sparkline = (values: bigint[]) => {
@@ -122,12 +151,12 @@ export const HELP_MESSAGE = [
   "Add your manager wallet under 👛 <b>Wallet</b> (import its private key, or create a new one), add the API key an admin issued for it, then tap <b>Vaults</b>.",
   "",
   "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, then set the amount (\"1.5\", \"25%\", \"max\") and slippage.",
-  "<b>LP</b> · Vault → ➕ New LP position. Paste a pool or search by symbol, pick a shape, set min and max price, and size each token.",
+  "<b>LP</b> · Vault → ➕ New LP. Paste a pool or search by symbol, pick a side, shape, and range, and size each token.",
   "",
   "<b>Commands</b>",
   "/vaults · vaults your active wallet manages",
   "/wallet · import, create, export, or switch wallets",
-  "/holdings &lt;vault&gt; · what a vault holds and is worth",
+  "/holdings &lt;vault&gt; · vault overview: value, tokens, positions",
   "/strategies &lt;vault&gt; · open strategies",
   "/nav &lt;vault&gt; · last posted NAVs",
   "/requests &lt;vault&gt; · queued deposits and withdrawals",
@@ -146,86 +175,111 @@ export function vaultsMessage(vaults: VaultSummary[]): string {
   const blocks = vaults.map((vault, index) =>
     [
       `<b>${index + 1}. ${escapeHtml(vault.name)}</b> · ${status(vault.status)}`,
-      address(vault.address),
-      `TVL <b>${amount(vault.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b> · ${solscan(vault.address)}`,
+      `└ <b>${compact(vault.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b> · ${solscanShort(vault.address)}`,
     ].join("\n"),
   );
   return [`🏦 <b>Your vaults</b> (${vaults.length})`, ...blocks].join("\n\n");
 }
 
-export function vaultMessage(vault: VaultSummary): string {
-  return [
-    `🏦 <b>${escapeHtml(vault.name)}</b> · ${status(vault.status)}`,
-    address(vault.address),
-    "",
-    `TVL <b>${amount(vault.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b> · ${solscan(vault.address)}`,
-    "",
-    "<i>What do you want to see?</i>",
-  ].join("\n");
+const SYMBOL_COLUMN_MAX = 6;
+const clipSymbol = (symbol: string) => {
+  const chars = [...symbol];
+  return chars.length > SYMBOL_COLUMN_MAX ? `${chars.slice(0, SYMBOL_COLUMN_MAX - 1).join("")}…` : symbol;
+};
+
+/** One aligned monospace row per token, largest share first. */
+function tokenRows(tokens: Holdings["tokens"]): string[] {
+  const sorted = [...tokens].sort((a, b) => (b.shareBps ?? -1) - (a.shareBps ?? -1));
+  const symbols = sorted.map((t) => clipSymbol(t.token.symbol));
+  const symbolWidth = Math.max(0, ...symbols.map((symbol) => [...symbol].length));
+  const shares = sorted.map((t) => (t.shareBps === null ? "?" : shareText(t.shareBps)));
+  const shareWidth = Math.max(0, ...shares.map((share) => share.length));
+  return sorted.map((t, index) => {
+    const symbol = symbols[index] ?? "";
+    const cells = t.shareBps === null ? " ".repeat(BAR_CELLS) : barCells(t.shareBps);
+    const column = `${escapeHtml(symbol + " ".repeat(symbolWidth - [...symbol].length))} ${cells} ${(shares[index] ?? "").padStart(shareWidth)}`;
+    return `<code>${column}</code> ${compactUnits(t.amount, t.token.decimals)} · ${t.usd === null ? "no price" : compactUsd(t.usd)}`;
+  });
 }
 
-export function holdingsMessage(vault: VaultSummary, holdings: Holdings): string {
+/** Open LP and perps positions; swap strategies already show up as tokens. */
+function positionRows(strategies: Strategy[]): string[] {
+  return strategies.flatMap((s) => {
+    switch (s.type) {
+      case "dlmm":
+        return [`🌊 <b>${pair(s.tokenX, s.tokenY)}</b> LP · ${rangeStatus(s)} · ${compact(s.amountX, s.tokenX.decimals, s.tokenX.symbol)} + ${compact(s.amountY, s.tokenY.decimals, s.tokenY.symbol)}`];
+      case "phoenix":
+        // Phoenix equity is in USDC atoms (6 decimals).
+        return [`📈 <b>Perps</b> · ${compact(s.equity, 6, "USDC")} equity · ${s.leverage === null ? "leverage n/a" : leverage(s.leverage)}`];
+      case "unreadable":
+        return [`⚠️ Unreadable ${escapeHtml(s.protocol)} strategy`];
+      case "jupiter":
+        return [];
+    }
+  });
+}
+
+/** The vault home screen: value, token mix, and open positions. */
+/** `holdings` or `strategies` is undefined when that read failed, so the menu still opens. */
+export function vaultMessage(vault: VaultSummary, holdings: Holdings | undefined, strategies: Strategy[] | undefined): string {
+  const title = [`🏦 <b>${escapeHtml(vault.name)}</b> · ${status(vault.status)}`, address(vault.address), ""];
+  if (!holdings) {
+    return [...title, `TVL <b>${compact(vault.totalAssets, vault.depositDecimals, vault.depositSymbol)}</b>`, "<i>⚠️ Live holdings unavailable right now. Tap 🔄 Refresh.</i>"].join("\n");
+  }
   const deposit = holdings.depositToken;
   const delta = holdings.navDeltaBps;
-  const lines = [
-    `📊 <b>${escapeHtml(vault.name)}</b> · holdings`,
-    "",
-    "<b>Value</b>",
-    ...tree([
-      `Live <b>${amount(holdings.totalValue, deposit.decimals, deposit.symbol)}</b>`,
-      `In USD ${usd(holdings.totalUsd)}`,
-      `Last NAV ${amount(holdings.navTotalAssets, deposit.decimals, deposit.symbol)}`,
-      `Live vs NAV ${delta === null ? "" : `${signIcon(delta)} `}${signedPercent(delta)}`,
-    ]),
-  ];
+  const value = [
+    `💰 <b>${compact(holdings.totalValue, deposit.decimals, deposit.symbol)}</b>`,
+    holdings.totalUsd === null ? "" : ` ≈ ${compactUsd(holdings.totalUsd)}`,
+    delta === null ? "" : ` · vs NAV ${signIcon(delta)} ${signedPercent(delta)}`,
+  ].join("");
+  const lines = [...title, value];
   if (holdings.partial) {
     const unpriced = holdings.unpriced.map(escapeHtml).join(", ") || "some tokens";
     lines.push(`<blockquote>⚠️ Partial view: no price for ${unpriced}. Missing value is not zero.</blockquote>`);
   }
-  lines.push("", `<b>Tokens</b> (${holdings.tokens.length})`);
-  for (const exposure of holdings.tokens) {
-    lines.push(
-      "",
-      [`<b>${escapeHtml(exposure.token.symbol)}</b>`, bar(exposure.shareBps), percent(exposure.shareBps)].filter(Boolean).join(" "),
-      ...tree([`Amount ${formatBaseUnits(exposure.amount, exposure.token.decimals)}`, `Value ${usd(exposure.usd)}`]),
-    );
+  lines.push("", "<b>Tokens</b>", ...(holdings.tokens.length > 0 ? tokenRows(holdings.tokens) : ["<i>None.</i>"]));
+  if (!strategies) lines.push("<i>⚠️ Positions unavailable right now. Tap 🔄 Refresh.</i>");
+  else {
+    const positions = positionRows(strategies);
+    if (positions.length > 0) lines.push("", "<b>Positions</b>", ...positions);
   }
   return lines.join("\n");
 }
 
-function strategyBlock(strategy: Strategy): string[] {
-  switch (strategy.type) {
-    case "jupiter":
-      return [`<b>Swap</b> · ${escapeHtml(strategy.symbol)}`, `Balance ${amount(strategy.vaultBalance, strategy.decimals, strategy.symbol)}`];
-    case "dlmm":
-      return [
-        `<b>Meteora DLMM</b> · ${escapeHtml(strategy.tokenX.symbol)}/${escapeHtml(strategy.tokenY.symbol)}`,
-        `Position ${address(strategy.position)}`,
-        `Range ${escapeHtml(strategy.lowerPrice)} to ${escapeHtml(strategy.upperPrice)} · now <b>${escapeHtml(strategy.activePrice)}</b>`,
-        `Holds ${amount(strategy.amountX, strategy.tokenX.decimals, strategy.tokenX.symbol)} + ${amount(strategy.amountY, strategy.tokenY.decimals, strategy.tokenY.symbol)}`,
-      ];
-    case "phoenix":
-      return [
-        "<b>Phoenix perps</b>",
-        // Phoenix equity is in USDC atoms (6 decimals).
-        `Equity ${amount(strategy.equity, 6, "USDC")} · leverage ${strategy.leverage === null ? "n/a" : `${strategy.leverage.toFixed(2)}x`}`,
-      ];
-    case "unreadable":
-      return [
-        `⚠️ <b>Unreadable ${escapeHtml(strategy.protocol)} strategy</b>`,
-        address(strategy.address),
-        `<i>${escapeHtml(strategy.reason)}</i>`,
-      ];
-  }
+function dlmmBlock(s: DlmmStrategy): string[] {
+  const { tokenX, tokenY } = s;
+  return [
+    `🌊 <b>${pair(tokenX, tokenY)}</b> · Meteora DLMM · ${rangeStatus(s)}`,
+    `<code>${price(s.lowerPrice)} ${rangeGauge(Number(s.lowerPrice), Number(s.activePrice), Number(s.upperPrice))} ${price(s.upperPrice)}</code>`,
+    ...tree([
+      `Now <b>${price(s.activePrice)}</b>`,
+      `Holds ${compact(s.amountX, tokenX.decimals, tokenX.symbol)} + ${compact(s.amountY, tokenY.decimals, tokenY.symbol)}`,
+      `Fees ${compact(s.pendingFeeX, tokenX.decimals, tokenX.symbol)} + ${compact(s.pendingFeeY, tokenY.decimals, tokenY.symbol)}`,
+    ]),
+    address(s.position),
+  ];
 }
 
 export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): string {
   const title = `🧩 <b>${escapeHtml(vault.name)}</b> · strategies`;
   if (strategies.length === 0) return `${title}\n\nNo open strategies.`;
-  return [`${title} (${strategies.length})`, ...strategies.map((s) => strategyBlock(s).join("\n"))].join("\n\n");
+  const blocks: string[][] = [];
+  const tokens = strategies.flatMap((s) => (s.type === "jupiter" ? [s] : []));
+  if (tokens.length > 0) {
+    blocks.push([
+      "💱 <b>Tokens</b>",
+      ...tree(tokens.map((t) => `${escapeHtml(t.symbol)} ${compactUnits(t.vaultBalance, t.decimals)}${t.vaultBalance === "0" ? " · <i>empty</i>" : ""}`)),
+    ]);
+  }
+  for (const s of strategies) {
+    if (s.type === "dlmm") blocks.push(dlmmBlock(s));
+    // Phoenix equity is in USDC atoms (6 decimals).
+    if (s.type === "phoenix") blocks.push(["📈 <b>Phoenix perps</b>", ...tree([`Equity ${compact(s.equity, 6, "USDC")} · leverage ${leverage(s.leverage)}`])]);
+    if (s.type === "unreadable") blocks.push([`⚠️ <b>Unreadable ${escapeHtml(s.protocol)} strategy</b>`, address(s.address), `<i>${escapeHtml(s.reason)}</i>`]);
+  }
+  return [`${title} (${strategies.length})`, ...blocks.map((block) => block.join("\n"))].join("\n\n");
 }
-
-type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
 
 export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy): string {
   const { tokenX, tokenY } = strategy;
@@ -511,83 +565,111 @@ function paramLines(params: VaultParams, deposit: TokenRef): string[] {
   ];
 }
 
-/** `vault` is unset only when creating one. */
-export function confirmMessage(vault: VaultSummary | undefined, action: PendingAction, quote?: Quote): string {
-  const lines = [`⚠️ <b>Confirm</b>${vault ? ` · ${escapeHtml(vault.name)}` : ""}`, "", `<b>${actionTitle(action)}</b>`];
-  if (action.kind === "swap" && quote) {
-    lines.push(
-      `You get <b>≈ ${amount(quote.outAmount, action.output.decimals, action.output.symbol)}</b> (fresh quote)`,
-      `Slippage limit ${action.slippageBps / 100}% · price impact ${escapeHtml(quote.priceImpactPct)}%`,
-    );
-  }
-  if (action.kind === "swap" && action.unverified) {
-    lines.push("<blockquote>⚠️ Jupiter has not verified this token. Check the contract address before you confirm.</blockquote>");
-  }
-  if (action.kind === "dlmmRemove" && action.bps === 10_000) lines.push("<i>Tokens return to the vault; the empty position stays open.</i>");
-  if (action.kind === "dlmmOpen") {
-    const bins = action.upperBinId - action.lowerBinId;
-    const transactions = Math.ceil(bins / DLMM_BINS_PER_TRANSACTION);
-    lines.push(
-      `Range ${escapeHtml(action.priceRange.low)} to ${escapeHtml(action.priceRange.high)} · ${bins} bins · ${shapeLabel(action.liquidity.shape)}`,
-      `<i>${transactions > 1 ? `About ${transactions} transactions. ` : ""}Creating the position costs a small refundable SOL rent from the manager wallet.</i>`,
-    );
-  }
-  if (action.kind === "dlmmAdd") lines.push(`<i>${shapeLabel(action.liquidity.shape)} shape across the position's existing range.</i>`);
-  if (action.kind === "dlmmZapOut") lines.push("<i>Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.</i>");
+const UNVERIFIED_WARNING = "⚠️ Jupiter has not verified this token. Check the contract address before you confirm.";
+const RENT_NOTE = "Creating the position costs a small refundable SOL rent from the manager wallet.";
+
+/** A confirm screen's content: a headline, detail rows, then plain notes and warnings. */
+interface Receipt {
+  headline: string;
+  rows: string[];
+  notes: string[];
+  warnings: string[];
+}
+
+function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
+  const r: Receipt = { headline: actionTitle(action), rows: [], notes: [], warnings: [] };
   switch (action.kind) {
-    case "dlmmInit":
-      lines.push(
-        `Range ${escapeHtml(action.priceRange.low)} to ${escapeHtml(action.priceRange.high)} · ${action.upperBinId - action.lowerBinId} bins`,
-        "<i>Adds no liquidity. Creating the position costs a small refundable SOL rent from the manager wallet.</i>",
+    case "swap":
+      if (quote) r.rows.push(`You get <b>≈ ${amount(quote.outAmount, action.output.decimals, action.output.symbol)}</b>`);
+      r.rows.push(`Slippage ${action.slippageBps / 100}%${quote ? ` · impact ${escapeHtml(quote.priceImpactPct)}%` : ""}`);
+      if (action.unverified) r.warnings.push(UNVERIFIED_WARNING);
+      break;
+    case "dlmmOpen": {
+      const bins = action.upperBinId - action.lowerBinId;
+      r.headline = `Open ${escapeHtml(action.pairLabel)} LP`;
+      r.rows.push(
+        `Deposit ${liquidityAmounts(action.liquidity)}`,
+        `Range ${escapeHtml(action.priceRange.low)} → ${escapeHtml(action.priceRange.high)}`,
+        `Bins ${bins} · ${shapeLabel(action.liquidity.shape)}`,
+        `Transactions ~${Math.ceil(bins / DLMM_BINS_PER_TRANSACTION)}`,
       );
+      r.notes.push(RENT_NOTE);
+      break;
+    }
+    case "dlmmInit":
+      r.rows.push(`Range ${escapeHtml(action.priceRange.low)} → ${escapeHtml(action.priceRange.high)}`, `Bins ${action.upperBinId - action.lowerBinId}`);
+      r.notes.push(`Adds no liquidity. ${RENT_NOTE}`);
+      break;
+    case "dlmmAdd":
+      r.headline = `Add to ${escapeHtml(action.pairLabel)} LP`;
+      r.rows.push(`Deposit ${liquidityAmounts(action.liquidity)}`, `Shape ${shapeLabel(action.liquidity.shape)}`);
+      r.notes.push(`${shapeLabel(action.liquidity.shape)} shape across the position's existing range.`);
+      break;
+    case "dlmmRemove":
+      if (action.bps === 10_000) r.notes.push("Tokens return to the vault; the empty position stays open.");
+      break;
+    case "dlmmZapOut":
+      r.notes.push("Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.");
       break;
     case "dlmmClose":
-      lines.push("<blockquote>⚠️ This removes all of the position's liquidity, claims its fees back to the vault, and closes it. Large positions take several transactions.</blockquote>");
+      r.warnings.push("⚠️ This removes all of the position's liquidity, claims its fees back to the vault, and closes it. Large positions take several transactions.");
       break;
     case "jupiterInit":
-      lines.push(address(action.token.mint), "<i>Lets the vault hold and swap this token.</i>");
-      if (action.verified !== true) lines.push("<blockquote>⚠️ Jupiter has not verified this token. Check the contract address before you confirm.</blockquote>");
+      r.rows.push(`Mint ${address(action.token.mint)}`);
+      r.notes.push("Lets the vault hold and swap this token.");
+      if (action.verified !== true) r.warnings.push(UNVERIFIED_WARNING);
       break;
     case "phoenixWithdraw":
-      lines.push("<i>If Phoenix queues the withdrawal, tap 🧹 Sweep once it arrives to turn it into USDC.</i>");
+      r.notes.push("If Phoenix queues the withdrawal, tap 🧹 Sweep once it arrives to turn it into USDC.");
       break;
     case "phoenixOrder": {
       const { order } = action;
-      if (order.order.type === "market") lines.push(`Slippage limit ${order.order.slippageBps / 100}% around the mark price`);
-      else if (order.order.postOnly) lines.push("Post-only: cancelled instead of filling right away");
-      if (order.reduceOnly) lines.push("Reduce-only: can only shrink an open position");
+      if (order.order.type === "market") r.rows.push(`Slippage limit ${order.order.slippageBps / 100}% around the mark price`);
+      else if (order.order.postOnly) r.rows.push("Post-only: cancelled instead of filling right away");
+      if (order.reduceOnly) r.rows.push("Reduce-only: can only shrink an open position");
       break;
     }
     case "vaultCreate":
-      lines.push(
-        `Deposit token <b>${escapeHtml(action.deposit.symbol)}</b> ${address(action.deposit.mint)}`,
-        ...paramLines(action, action.deposit),
-        "<i>Your active wallet becomes the vault's manager. The deposit token cannot change later.</i>",
-      );
+      r.rows.push(`Deposit token <b>${escapeHtml(action.deposit.symbol)}</b> ${address(action.deposit.mint)}`, ...paramLines(action, action.deposit));
+      r.notes.push("Your active wallet becomes the vault's manager. The deposit token cannot change later.");
       break;
     case "vaultUpdate":
-      lines.push(...changeLines(action.changes, action.deposit));
+      r.rows.push(...changeLines(action.changes, action.deposit));
       if (action.changes.status === "paused") {
-        lines.push("<blockquote>⚠️ Paused stops depositors from withdrawing, and blocks deposits and trading, until you set the vault back to Normal.</blockquote>");
+        r.warnings.push("⚠️ Paused stops depositors from withdrawing, and blocks deposits and trading, until you set the vault back to Normal.");
       }
-      if (action.changes.status === "reduceOnly") lines.push("<i>Reduce-only blocks new deposits and new trades. Withdrawals still work.</i>");
+      if (action.changes.status === "reduceOnly") r.notes.push("Reduce-only blocks new deposits and new trades. Withdrawals still work.");
       if (action.changes.performanceFeeBps !== undefined || action.changes.managementFeeBps !== undefined) {
-        lines.push("<i>New fees may take effect only after a waiting period. ⚙️ Settings shows when.</i>");
+        r.notes.push("New fees may take effect only after a waiting period. ⚙️ Settings shows when.");
       }
       break;
     case "vaultClaimFee":
-      lines.push("<i>Mints the manager's accrued fee shares to your wallet.</i>");
+      r.notes.push("Mints the manager's accrued fee shares to your wallet.");
       break;
     case "vaultClose":
-      lines.push(
-        "<blockquote>⚠️ Closing deletes this vault for good. Nobody can deposit into it again. It only works once no shares, pending requests, unclaimed fees, open strategies, or assets remain.</blockquote>",
+      r.warnings.push(
+        "⚠️ Closing deletes this vault for good. Nobody can deposit into it again. It only works once no shares, pending requests, unclaimed fees, open strategies, or assets remain.",
       );
       break;
     default:
       break;
   }
-  lines.push("", `<blockquote>This signs and sends a real Solana mainnet transaction from ${vault ? "the vault" : "your manager wallet"}. It cannot be undone.</blockquote>`);
-  return lines.join("\n");
+  return r;
+}
+
+/** `vault` is unset only when creating one. */
+export function confirmMessage(vault: VaultSummary | undefined, action: PendingAction, quote?: Quote): string {
+  const { headline, rows, notes, warnings } = receipt(action, quote);
+  return [
+    `🧾 <b>Review</b>${vault ? ` · ${escapeHtml(vault.name)}` : ""}`,
+    DIVIDER,
+    `<b>${headline}</b>`,
+    ...tree(rows),
+    DIVIDER,
+    ...warnings.map((warning) => `<blockquote>${warning}</blockquote>`),
+    ...notes.map((note) => `<i>${note}</i>`),
+    `<blockquote>⚡ Real mainnet transaction from ${vault ? "the vault" : "your manager wallet"}. Cannot be undone.</blockquote>`,
+  ].join("\n");
 }
 
 function progressLine(progress: Progress): string {
@@ -666,32 +748,71 @@ export function swapQuoteMessage(form: SwapForm, tokens: { input: TokenRef; outp
   return lines.join("\n");
 }
 
-export function lpFormMessage(form: LpForm, range: PriceRange | string | undefined, balances: { x: string; y: string } | undefined): string {
-  const pool = form.pool;
-  const lines = [form.mode === "add" ? "➕ <b>Add liquidity</b>" : "➕ <b>New LP position</b>", ""];
-  if (!pool) {
-    lines.push(`Pool <i>not set: paste a pool address or search, e.g. "SOL"</i>`, `<i>The pool must include ${escapeHtml(form.deposit.symbol)}.</i>`);
-    if (form.poolChoices?.length) lines.push("", "<i>Matches:</i>");
+function poolPickerMessage(form: LpForm): string {
+  const lines = ["➕ <b>New LP position</b> · pick a pool"];
+  const choices = form.poolChoices ?? [];
+  if (choices.length === 0 || form.poolQuery === undefined) {
+    lines.push("", `Pool <i>not set: paste a pool address or search, e.g. "SOL"</i>`, `<i>The pool must include ${escapeHtml(form.deposit.symbol)}.</i>`);
     return lines.join("\n");
   }
-  lines.push(
-    `Pool <b>${escapeHtml(pool.tokenX.symbol)}/${escapeHtml(pool.tokenY.symbol)}</b> · ${pool.binStep} bps bins`,
-    `Price now <b>${escapeHtml(pool.activePrice)}</b> ${escapeHtml(pool.tokenY.symbol)} per ${escapeHtml(pool.tokenX.symbol)}`,
-    `Shape ${shapeLabel(form.shape)}`,
-  );
-  if (form.mode === "open") {
-    lines.push(`Min ${form.minPrice === undefined ? "?" : formatPrice(form.minPrice)} · Max ${form.maxPrice === undefined ? "?" : formatPrice(form.maxPrice)}`);
+  lines.push(`<i>Results for "${escapeHtml(form.poolQuery)}" · paired with ${escapeHtml(form.deposit.symbol)}</i>`);
+  choices.forEach((choice, index) => {
+    const fee = choice.baseFeePct === null ? "" : ` · fee ${feePct(choice.baseFeePct)}`;
+    lines.push(
+      "",
+      `<b>${index + 1}. ${escapeHtml(choice.pair)}</b>${fee} · bin ${choice.binStep}`,
+      `└ TVL ${compactUsd(choice.tvl)} · Vol 24h ${compactUsd(choice.volume24h)}`,
+    );
+  });
+  return lines.join("\n");
+}
+
+/** How an amount input reads next to the vault's balance: "5 (50% of balance)". */
+function depositAmount(input: AmountInput | undefined, token: TokenRef, balanceBaseUnits: string | undefined): string {
+  if (!input) return "<i>not set</i>";
+  if (input.kind === "exact") return compactUnits(input.baseUnits, token.decimals);
+  const share = input.bps === 10_000 ? "max" : `${input.bps / 100}% of balance`;
+  return balanceBaseUnits === undefined ? share : `${compactUnits(((BigInt(balanceBaseUnits) * BigInt(input.bps)) / 10_000n).toString(), token.decimals)} (${share})`;
+}
+
+export function lpFormMessage(form: LpForm, range: PriceRange | string | undefined, balances: { x: string; y: string } | undefined): string {
+  const pool = form.pool;
+  if (!pool) return poolPickerMessage(form);
+  const { tokenX, tokenY } = pool;
+  const x = escapeHtml(tokenX.symbol);
+  const y = escapeHtml(tokenY.symbol);
+  const fee = form.baseFeePct === null ? "" : ` · fee ${feePct(form.baseFeePct)}`;
+  const lines = [
+    form.mode === "add" ? `➕ <b>${x}/${y}</b> · add liquidity${fee} · bin ${pool.binStep}` : `🎯 <b>${x}/${y}</b>${fee} · bin ${pool.binStep}`,
+    DIVIDER,
+    `Price <b>${price(pool.activePrice)}</b> ${y} per ${x}`,
+  ];
+  if (balances) lines.push(`Vault has ${compact(balances.x, tokenX.decimals, tokenX.symbol)} · ${compact(balances.y, tokenY.decimals, tokenY.symbol)}`);
+  lines.push("");
+  let holdsX = true;
+  let holdsY = true;
+  if (form.mode === "add") lines.push(`Shape <b>${shapeLabel(form.shape)}</b> · across the position's range`);
+  else {
+    const side =
+      form.side === "both" ? "⚖️ <b>Both sides</b>" : form.side === "x" ? `💵 <b>${x} only</b> · sell as price rises` : `🎯 <b>${y} only</b> · buy ${x} as price falls`;
+    const preset = form.rangeBps === undefined ? "custom" : rangePresetLabel(form.side, form.rangeBps);
+    lines.push(`${side} · ${shapeLabel(form.shape)} · ${preset}`);
     if (typeof range === "string") lines.push(`⚠️ <i>${escapeHtml(range)}</i>`);
     else if (range) {
-      const holds = range.sides === "both" ? "both tokens" : `only ${escapeHtml(range.sides === "x" ? pool.tokenX.symbol : pool.tokenY.symbol)}`;
-      lines.push(`<i>${range.binCount} bins, ${formatPrice(range.lowPrice)} to ${formatPrice(range.highPrice)}; holds ${holds}.</i>`);
+      holdsX = range.sides !== "y";
+      holdsY = range.sides !== "x";
+      const holds = range.sides === "both" ? "both tokens" : `only ${range.sides === "x" ? x : y}`;
+      lines.push(
+        `<code>${escapeHtml(formatPrice(range.lowPrice))} ${rangeGauge(range.lowPrice, Number(pool.activePrice), range.highPrice)} ${escapeHtml(formatPrice(range.highPrice))}</code>`,
+        `<i>${range.binCount} bins · holds ${holds}</i>`,
+      );
     }
   }
-  lines.push(
-    "",
-    `${escapeHtml(pool.tokenX.symbol)} ${escapeHtml(describeAmount(form.amountX, pool.tokenX, (base, decimals) => amount(base, decimals, "").trim()))}${balances ? ` · vault has ${amount(balances.x, pool.tokenX.decimals, pool.tokenX.symbol)}` : ""}`,
-    `${escapeHtml(pool.tokenY.symbol)} ${escapeHtml(describeAmount(form.amountY, pool.tokenY, (base, decimals) => amount(base, decimals, "").trim()))}${balances ? ` · vault has ${amount(balances.y, pool.tokenY.decimals, pool.tokenY.symbol)}` : ""}`,
-  );
+  const deposits = [
+    ...(holdsX ? [`${x} ${depositAmount(form.amountX, tokenX, balances?.x)}`] : []),
+    ...(holdsY ? [`${y} ${depositAmount(form.amountY, tokenY, balances?.y)}`] : []),
+  ];
+  lines.push("", "<b>Deposit</b>", ...tree(deposits));
   return lines.join("\n");
 }
 

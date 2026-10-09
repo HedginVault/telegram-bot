@@ -57,12 +57,15 @@ export const pool: PoolInfo = {
   activeBinId: -100,
   activePrice: "150",
 };
+export const SMALL_POOL = "SmaLLPooL1111111111111111111111111111111111";
 export const poolSearch: PoolSearchPage = {
-  total: 2,
+  total: 3,
   page: 1,
   pages: 1,
+  // The API's order, not TVL order.
   pools: [
-    { address: POOL, name: "SOL-USDC", tokenX: pool.tokenX, tokenY: pool.tokenY, binStep: 10, tvl: 1_250_000, fees24h: 3400 },
+    { address: SMALL_POOL, name: "SOL-USDC", tokenX: pool.tokenX, tokenY: pool.tokenY, binStep: 80, tvl: 3400, fees24h: null, volume24h: null, baseFeePct: null },
+    { address: POOL, name: "SOL-USDC", tokenX: pool.tokenX, tokenY: pool.tokenY, binStep: 10, tvl: 1_250_000, fees24h: 3400, volume24h: 340_000, baseFeePct: 0.1 },
     { address: "Other1111111111111111111111111111111111111", name: "SOL-BONK", tokenX: pool.tokenX, tokenY: { mint: "Bonk111111111111111111111111111111111111111", symbol: "BONK", decimals: 5 }, binStep: 80 },
   ],
 };

@@ -24,13 +24,24 @@ import {
   expired,
   formButton,
   keyboard,
+  rowsOf,
 } from "./ui";
+import { feePct } from "./format";
 
 /** The protocol config caps swap slippage at 300 bps. */
 export const MAX_SLIPPAGE_BPS = 300;
 export const SLIPPAGE_PRESETS = [50, 100, 300] as const;
 export const SHAPES: readonly DlmmShape[] = ["spot", "curve", "bidAsk"];
-export const RANGE_PRESETS_BPS = [100, 500, 1000] as const;
+/** Which tokens a new position holds: x only (range above the price), both, or y only (below). Button order. */
+export const LP_SIDES = ["x", "both", "y"] as const;
+export type LpSide = (typeof LP_SIDES)[number];
+/** Range presets by side: ± around the price for both, distance from the price for one side. */
+export const RANGE_PRESETS_BPS: Record<LpSide, readonly number[]> = {
+  both: [100, 200, 500, 1000, 2000],
+  x: [500, 1000, 2000, 5000, 9000],
+  y: [500, 1000, 2000, 5000, 9000],
+};
+const DEFAULT_RANGE_BPS: Record<LpSide, number> = { both: 500, x: 1000, y: 1000 };
 /** `phoenix/order` accepts market slippage of 1..2000 bps. */
 export const MAX_ORDER_SLIPPAGE_BPS = 2000;
 export const ORDER_SLIPPAGE_PRESETS = [50, 100, 300] as const;
@@ -73,13 +84,30 @@ export interface LpForm {
   deposit: TokenRef;
   pool?: PoolInfo;
   position?: string;
+  /** Pool fee from the search result it was picked from; null when pasted by address or adding. */
+  baseFeePct: number | null;
   minPrice?: number;
   maxPrice?: number;
+  side: LpSide;
+  /** The range preset in use; unset once the user types a min or max price. */
+  rangeBps?: number;
   shape: DlmmShape;
   amountX?: AmountInput;
   amountY?: AmountInput;
-  /** Results of the last typed pool search, shown as buttons. */
-  poolChoices?: { address: string; label: string }[];
+  /** The last typed pool search and its results, shown as buttons. */
+  poolQuery?: string;
+  poolChoices?: PoolChoice[];
+}
+
+/** A pool search result; display numbers come from the API as floats. */
+export interface PoolChoice {
+  address: string;
+  pair: string;
+  binStep: number;
+  /** Percent, e.g. 0.2 = 0.2%. */
+  baseFeePct: number | null;
+  tvl: number | null;
+  volume24h: number | null;
 }
 
 export interface PhoenixTransferForm {
@@ -267,7 +295,6 @@ export interface FormDeps {
 /** After a button: show a screen, or ask the user to type a field. */
 export type FormResult = { kind: "show"; screen: Screen } | { kind: "ask"; field: TextField; prompt: string };
 
-const DEFAULT_RANGE_BPS = 500;
 const SHAPE_LABEL: Record<DlmmShape, string> = { spot: "Spot", curve: "Curve", bidAsk: "Bid-Ask" };
 export const shapeLabel = (shape: DlmmShape) => SHAPE_LABEL[shape];
 
@@ -338,7 +365,7 @@ export function vaultChanges(params: VaultParams, current: VaultParams): VaultCh
 
 export async function createLpForm(api: HedgeClient, vault: string, position?: { position: string; lbPair: string }): Promise<LpForm> {
   const holdings = await api.getHoldings(vault);
-  const form: LpForm = { kind: "lp", mode: position ? "add" : "open", vault, deposit: tokenRef(holdings.depositToken), shape: "spot" };
+  const form: LpForm = { kind: "lp", mode: position ? "add" : "open", vault, deposit: tokenRef(holdings.depositToken), baseFeePct: null, side: "both", shape: "spot" };
   if (position) {
     form.position = position.position;
     form.pool = await api.getPool(vault, position.lbPair);
@@ -346,21 +373,37 @@ export async function createLpForm(api: HedgeClient, vault: string, position?: {
   return form;
 }
 
-function setPool(form: LpForm, pool: PoolInfo): void {
+function setPool(form: LpForm, pool: PoolInfo, baseFeePct: number | null): void {
   if (pool.tokenX.mint !== form.deposit.mint && pool.tokenY.mint !== form.deposit.mint) {
     throw new InputError(`That pool does not include the vault's deposit token, ${form.deposit.symbol}.`);
   }
   form.pool = pool;
+  form.baseFeePct = baseFeePct;
+  form.poolQuery = undefined;
   form.poolChoices = undefined;
   form.amountX = undefined;
   form.amountY = undefined;
-  setRange(form, DEFAULT_RANGE_BPS);
+  form.side = "both";
+  setRange(form, DEFAULT_RANGE_BPS.both);
 }
 
+/**
+ * Sets min and max from a preset. A one-sided range keeps its near edge 1.5 bins from the
+ * active price, so `binRangeForPrices` starts it on the next bin and reports that one side.
+ */
 function setRange(form: LpForm, bps: number): void {
-  const active = Number(form.pool?.activePrice);
-  form.minPrice = active * (1 - bps / 10_000);
-  form.maxPrice = active * (1 + bps / 10_000);
+  if (!form.pool) return;
+  const active = Number(form.pool.activePrice);
+  const bin = 1 + form.pool.binStep / 10_000;
+  form.rangeBps = bps;
+  form.minPrice = form.side === "x" ? active * bin ** 1.5 : active * (1 - bps / 10_000);
+  form.maxPrice = form.side === "y" ? active * bin ** -1.5 : active * (1 + bps / 10_000);
+}
+
+/** Drops the amount of a token the chosen side cannot hold. */
+function clearUnholdable(form: LpForm): void {
+  if (form.side === "x") form.amountY = undefined;
+  if (form.side === "y") form.amountX = undefined;
 }
 
 /** The bin range the form's prices cover, or the reason it has none. */
@@ -483,13 +526,25 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
     }
   }
   switch (op.op) {
-    case "shape":
-      form.shape = SHAPES[(SHAPES.indexOf(form.shape) + 1) % SHAPES.length] ?? "spot";
+    case "shape": {
+      const shape = SHAPES[op.index];
+      if (!shape) throw expired();
+      form.shape = shape;
       return show;
+    }
+    case "lpSide": {
+      const side = LP_SIDES[op.index];
+      if (!side || form.mode !== "open") throw expired();
+      if (!form.pool) throw new InputError("Pick a pool first.");
+      form.side = side;
+      setRange(form, DEFAULT_RANGE_BPS[side]);
+      clearUnholdable(form);
+      return show;
+    }
     case "pool": {
       const choice = form.poolChoices?.[op.index];
       if (!choice) throw expired();
-      setPool(form, await deps.api.getPool(form.vault, choice.address));
+      setPool(form, await deps.api.getPool(form.vault, choice.address), choice.baseFeePct);
       return show;
     }
     case "range":
@@ -615,21 +670,40 @@ export async function applyFormText(formId: string, field: TextField, text: stri
     case "pool": {
       const query = text.trim();
       if (BASE58_ADDRESS.test(query)) {
-        setPool(form, await deps.api.getPool(form.vault, query));
+        setPool(form, await deps.api.getPool(form.vault, query), null);
         return;
       }
       const { pools } = await deps.api.searchPools(form.vault, query);
-      const eligible = pools.filter((p) => p.tokenX.mint === form.deposit.mint || p.tokenY.mint === form.deposit.mint).slice(0, 6);
+      const eligible = pools.filter((p) => p.tokenX.mint === form.deposit.mint || p.tokenY.mint === form.deposit.mint);
       if (eligible.length === 0) throw new InputError(`No pool matching "${query}" pairs with ${form.deposit.symbol}.`);
-      form.poolChoices = eligible.map((p) => ({ address: p.address, label: `${p.tokenX.symbol}/${p.tokenY.symbol} · ${p.binStep} bps` }));
+      form.poolQuery = query;
+      form.poolChoices = eligible
+        .map((p) => ({
+          address: p.address,
+          pair: `${p.tokenX.symbol}/${p.tokenY.symbol}`,
+          binStep: p.binStep,
+          baseFeePct: p.baseFeePct ?? null,
+          tvl: p.tvl ?? null,
+          volume24h: p.volume24h ?? null,
+        }))
+        .sort((a, b) => (b.tvl ?? -1) - (a.tvl ?? -1))
+        .slice(0, 6);
       return;
     }
     case "minPrice":
-      form.minPrice = parsePrice(text);
+    case "maxPrice": {
+      const price = parsePrice(text);
+      if (field === "minPrice") form.minPrice = price;
+      else form.maxPrice = price;
+      form.rangeBps = undefined;
+      // A typed range picks its own side; follow it so the side buttons and amounts match.
+      const range = formRange(form);
+      if (typeof range !== "string") {
+        form.side = range.sides;
+        clearUnholdable(form);
+      }
       return;
-    case "maxPrice":
-      form.maxPrice = parsePrice(text);
-      return;
+    }
     case "amountX":
     case "amountY": {
       if (!form.pool) throw new InputError("Pick a pool first.");
@@ -849,32 +923,44 @@ function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps
   return { html: swapFormMessage(form, inputBalance), keyboard: keyboard(rows) };
 }
 
+const SHAPE_BUTTONS: Record<DlmmShape, string> = { spot: "▬ Spot", curve: "⛰ Curve", bidAsk: "🔻 Bid-Ask" };
+const marked = (text: string, on: boolean) => (on ? `${text} ✅` : text);
+/** "±5%" around the price, or "+10%" above / "−10%" below it for one side. */
+export const rangePresetLabel = (side: LpSide, bps: number) => `${side === "both" ? "±" : side === "x" ? "+" : "−"}${bps / 100}%`;
+
 function renderLpForm(formId: string, form: LpForm, holdings: Holdings): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const pool = form.pool;
   const range = form.mode === "open" ? formRange(form) : undefined;
+  const balances = pool ? { x: balanceOf(holdings, pool.tokenX.mint), y: balanceOf(holdings, pool.tokenY.mint) } : undefined;
+  const html = lpFormMessage(form, range, balances);
+  const back = button("⬅️ Vault", { kind: "vault", vault: form.vault });
+  if (!pool) {
+    const choices = (form.poolChoices ?? []).map((choice, index) =>
+      op(`${index + 1}. ${choice.pair} · ${choice.baseFeePct === null ? `bin ${choice.binStep}` : feePct(choice.baseFeePct)}`, { op: "pool", index }),
+    );
+    return { html, keyboard: keyboard([...rowsOf(choices, 2), [op("🏊 Pick pool", { op: "ask", field: "pool" })], [back]]) };
+  }
   const rows: Button[][] = [];
   if (form.mode === "open") {
-    rows.push([op(pool ? "🏊 Change pool" : "🏊 Pick pool", { op: "ask", field: "pool" })]);
-    form.poolChoices?.forEach((choice, index) => rows.push([op(choice.label, { op: "pool", index })]));
+    const sideButtons: Record<LpSide, string> = { x: `💵 ${pool.tokenX.symbol} only`, both: "⚖️ Both", y: `🎯 ${pool.tokenY.symbol} only` };
+    rows.push(LP_SIDES.map((side, index) => op(marked(sideButtons[side], form.side === side), { op: "lpSide", index })));
   }
-  rows.push([op(`📐 Shape: ${shapeLabel(form.shape)} · tap to change`, { op: "shape" })]);
-  if (pool && form.mode === "open") {
-    rows.push(RANGE_PRESETS_BPS.map((bps) => op(`±${bps / 100}%`, { op: "range", bps })));
-    rows.push([op("⬇️ Min price", { op: "ask", field: "minPrice" }), op("⬆️ Max price", { op: "ask", field: "maxPrice" })]);
+  rows.push(SHAPES.map((shape, index) => op(marked(SHAPE_BUTTONS[shape], form.shape === shape), { op: "shape", index })));
+  if (form.mode === "open") {
+    rows.push(RANGE_PRESETS_BPS[form.side].map((bps) => op(marked(rangePresetLabel(form.side, bps), form.rangeBps === bps), { op: "range", bps })));
+    rows.push([op("✏️ Min price", { op: "ask", field: "minPrice" }), op("✏️ Max price", { op: "ask", field: "maxPrice" })]);
   }
-  if (pool) {
-    const sides = range && typeof range !== "string" ? range.sides : "both";
-    const amountButtons: Button[] = [];
-    if (sides !== "y") amountButtons.push(op(`💧 ${pool.tokenX.symbol} amount`, { op: "ask", field: "amountX" }));
-    if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "ask", field: "amountY" }));
-    rows.push(amountButtons);
-    if ((form.amountX || form.amountY) && (form.mode === "add" || (range && typeof range !== "string"))) rows.push([op("✅ Review", { op: "review" })]);
-    if (form.mode === "open" && range && typeof range !== "string") rows.push([op("🫙 Empty position only", { op: "empty" })]);
-  }
-  rows.push([button("⬅️ Vault", { kind: "vault", vault: form.vault })]);
-  const balances = pool ? { x: balanceOf(holdings, pool.tokenX.mint), y: balanceOf(holdings, pool.tokenY.mint) } : undefined;
-  return { html: lpFormMessage(form, range, balances), keyboard: keyboard(rows) };
+  const validRange = range !== undefined && typeof range !== "string";
+  const sides = validRange ? range.sides : "both";
+  const amountButtons: Button[] = [];
+  if (sides !== "y") amountButtons.push(op(`💧 ${pool.tokenX.symbol} amount`, { op: "ask", field: "amountX" }));
+  if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "ask", field: "amountY" }));
+  rows.push(amountButtons);
+  if ((form.amountX || form.amountY) && (form.mode === "add" || validRange)) rows.push([op("✅ Review", { op: "review" })]);
+  if (form.mode === "open") rows.push([...(validRange ? [op("🫙 Empty position", { op: "empty" })] : []), op("🏊 Change pool", { op: "ask", field: "pool" })]);
+  rows.push([back]);
+  return { html, keyboard: keyboard(rows) };
 }
 
 /** Quotes the swap form and offers the confirm step. */

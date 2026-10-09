@@ -17,8 +17,8 @@ import {
   vaultFormMessage,
   escapeHtml,
   fitMessage,
-  holdingsMessage,
   confirmMessage,
+  rangeGauge,
   lpFormMessage,
   strategiesMessage,
   swapFormMessage,
@@ -41,7 +41,36 @@ const hostileToken = { mint: "M", symbol: HOSTILE, decimals: 6 };
 const hostilePool = { lbPair: "P", tokenX: hostileToken, tokenY: hostileToken, binStep: 10, activeBinId: 1, activePrice: HOSTILE };
 const hostilePicked = { ...hostileToken, mint: HOSTILE, pasted: true, verified: false };
 const hostileSwap: SwapForm = { kind: "swap", vault: VAULT, deposit: hostileToken, side: "sell", token: hostilePicked, amount: { kind: "share", bps: 2500 }, slippageBps: 50, held: [hostilePicked] };
-const hostileLp: LpForm = { kind: "lp", mode: "open", vault: VAULT, deposit: hostileToken, pool: hostilePool, shape: "bidAsk", minPrice: 1, maxPrice: 2, amountX: { kind: "exact", baseUnits: "1" } };
+const hostileLp: LpForm = {
+  kind: "lp",
+  mode: "open",
+  vault: VAULT,
+  deposit: hostileToken,
+  pool: hostilePool,
+  baseFeePct: 0.25,
+  side: "x",
+  rangeBps: 500,
+  shape: "bidAsk",
+  minPrice: 1,
+  maxPrice: 2,
+  amountX: { kind: "exact", baseUnits: "1" },
+  amountY: { kind: "share", bps: 5000 },
+};
+const hostileChoice = { address: "P", pair: HOSTILE, binStep: 10, baseFeePct: 0.2, tvl: 5, volume24h: null };
+const hostileDlmm: Strategy = {
+  type: "dlmm",
+  address: "S2",
+  position: HOSTILE,
+  tokenX: hostileToken,
+  tokenY: hostileToken,
+  lowerPrice: HOSTILE,
+  upperPrice: HOSTILE,
+  activePrice: HOSTILE,
+  amountX: "1",
+  amountY: "2",
+  pendingFeeX: "3",
+  pendingFeeY: "4",
+};
 const hostileLiquidity = { tokenX: hostileToken, tokenY: hostileToken, amountX: "1", amountY: "2", shape: "curve" as const };
 const hostileDetail = { ...vaultDetail, name: HOSTILE, depositSymbol: HOSTILE, pendingPerformanceFeeBps: 1, feeEffectiveTs: 1 };
 const hostilePhoenix = {
@@ -68,6 +97,9 @@ const hostileVaultForm: VaultForm = { kind: "vault", name: HOSTILE, deposit: hos
 const hostileFlow = { mint: HOSTILE, symbol: HOSTILE, decimals: 6, contributed: "1", returned: "0", feesGross: "0", feesTreasury: "0", feesRetained: "0", realizedPnl: "-1" };
 const hostileClosed = { strategy: HOSTILE, id: null, type: null, protocolAccount: null, openedTs: null, closedTs: 0, openSignature: null, closeSignature: HOSTILE, exact: false, tokens: [] };
 const hostileActions: PendingAction[] = [
+  { kind: "dlmmAdd", vault: VAULT, position: "P", pairLabel: HOSTILE, liquidity: hostileLiquidity },
+  { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 10_000 },
+  { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE },
   { kind: "dlmmInit", vault: VAULT, lbPair: "P", pairLabel: HOSTILE, lowerBinId: 0, upperBinId: 5, priceRange: { low: HOSTILE, high: HOSTILE } },
   { kind: "dlmmClose", vault: VAULT, position: "P", pairLabel: HOSTILE },
   { kind: "jupiterInit", vault: VAULT, token: { ...hostileToken, mint: HOSTILE }, verified: false },
@@ -86,59 +118,81 @@ const hostileActions: PendingAction[] = [
 ];
 
 describe("messages", () => {
-  it("lists vaults with a tap-to-copy address and status in words", () => {
-    expect(vaultsMessage([vaultSummary])).toBe(
+  it("lists vaults on two lines each with a compact amount and a short Solscan link", () => {
+    expect(vaultsMessage([vaultSummary, { ...vaultSummary, name: "Dust", status: "paused", totalAssets: "51673" }])).toBe(
       [
-        "🏦 <b>Your vaults</b> (1)",
+        "🏦 <b>Your vaults</b> (2)",
         "",
         "<b>1. Demo</b> · 🟢 normal",
-        `<code>${VAULT}</code>`,
-        `TVL <b>1.5 USDC</b> · <a href="https://solscan.io/account/${VAULT}">Solscan</a>`,
+        `└ <b>1.5 USDC</b> · <a href="https://solscan.io/account/${VAULT}">Vau1…1111 ↗</a>`,
+        "",
+        "<b>2. Dust</b> · 🔴 paused",
+        `└ <b>0.05167 USDC</b> · <a href="https://solscan.io/account/${VAULT}">Vau1…1111 ↗</a>`,
       ].join("\n"),
     );
     expect(vaultsMessage([])).toBe("🏦 This API key has no vaults in scope.");
   });
 
-  it("renders holdings and warns that a partial view is not zero", () => {
-    expect(holdingsMessage(vaultSummary, holdings)).toBe(
+  it("shows the vault overview with aligned tokens, positions, and the partial-view warning", () => {
+    expect(vaultMessage(vaultSummary, holdings, strategies)).toBe(
       [
-        "📊 <b>Demo</b> · holdings",
+        "🏦 <b>Demo</b> · 🟢 normal",
+        `<code>${VAULT}</code>`,
         "",
-        "<b>Value</b>",
-        "├ Live <b>2.5 USDC</b>",
-        "├ In USD $2.50",
-        "├ Last NAV 2.4 USDC",
-        "└ Live vs NAV 🟢 +4.17%",
+        "💰 <b>2.5 USDC</b> ≈ $2.50 · vs NAV 🟢 +4.17%",
         "<blockquote>⚠️ Partial view: no price for MYSTERY. Missing value is not zero.</blockquote>",
         "",
-        "<b>Tokens</b> (2)",
+        "<b>Tokens</b>",
+        "<code>SOL  ██████░░░░ 60.0%</code> 0.01 · $1.50",
+        "<code>USDC ████░░░░░░ 40.0%</code> 1 · $1.00",
         "",
-        "<b>USDC</b> <code>████░░░░░░</code> 40.00%",
-        "├ Amount 1",
-        "└ Value $1.00",
-        "",
-        "<b>SOL</b> <code>██████░░░░</code> 60.00%",
-        "├ Amount 0.01",
-        "└ Value $1.50",
+        "<b>Positions</b>",
+        "🌊 <b>SOL/USDC</b> LP · 🟢 in range · 0.5 SOL + 75 USDC",
+        "📈 <b>Perps</b> · 12.3456 USDC equity · leverage n/a",
+        "⚠️ Unreadable dlmm strategy",
       ].join("\n"),
     );
   });
 
-  it("renders every strategy kind", () => {
-    expect(strategiesMessage(vaultSummary, strategies)).toBe(
+  it("omits positions and the warning when there are none, and marks out-of-range LPs", () => {
+    const complete = { ...holdings, partial: false, unpriced: [], navDeltaBps: null, totalUsd: null };
+    const lines = vaultMessage(vaultSummary, complete, []).split("\n");
+    expect(lines[3]).toBe("💰 <b>2.5 USDC</b>");
+    expect(lines.some((line) => line.includes("Partial view") || line.includes("Positions"))).toBe(false);
+    const [, dlmm] = strategies;
+    if (dlmm?.type !== "dlmm") throw new Error("fixture missing");
+    expect(vaultMessage(vaultSummary, complete, [{ ...dlmm, activePrice: "170" }, { type: "phoenix", address: "S", equity: "1995800", leverage: 0 }])).toContain(
+      "<b>Positions</b>\n🌊 <b>SOL/USDC</b> LP · 🟠 out of range · 0.5 SOL + 75 USDC\n📈 <b>Perps</b> · 1.9958 USDC equity · 0.00x",
+    );
+  });
+
+  it("draws the price on a range gauge, with an arrow at the edge when out of range", () => {
+    expect(rangeGauge(140, 150, 160)).toBe("├─────●────┤");
+    expect(rangeGauge(140, 140, 160)).toBe("├●─────────┤");
+    expect(rangeGauge(140, 160, 160)).toBe("├─────────●┤");
+    expect(rangeGauge(140, 120, 160)).toBe("├◀─────────┤");
+    expect(rangeGauge(140, 200, 160)).toBe("├─────────▶┤");
+    expect(rangeGauge(Number.NaN, 1, 2)).toBe("├──────────┤");
+  });
+
+  it("groups strategies by kind", () => {
+    expect(strategiesMessage(vaultSummary, [...strategies, { type: "jupiter", address: "S5", symbol: "MET", decimals: 6, vaultBalance: "0" }])).toBe(
       [
-        "🧩 <b>Demo</b> · strategies (4)",
+        "🧩 <b>Demo</b> · strategies (5)",
         "",
-        "<b>Swap</b> · SOL",
-        "Balance 0.01 SOL",
+        "💱 <b>Tokens</b>",
+        "├ SOL 0.01",
+        "└ MET 0 · <i>empty</i>",
         "",
-        "<b>Meteora DLMM</b> · SOL/USDC",
-        "Position <code>Pos1111111111111111111111111111111111111111</code>",
-        "Range 140 to 160 · now <b>150</b>",
-        "Holds 0.5 SOL + 75 USDC",
+        "🌊 <b>SOL/USDC</b> · Meteora DLMM · 🟢 in range",
+        "<code>140 ├─────●────┤ 160</code>",
+        "├ Now <b>150</b>",
+        "├ Holds 0.5 SOL + 75 USDC",
+        "└ Fees 0.001 SOL + 0.25 USDC",
+        "<code>Pos1111111111111111111111111111111111111111</code>",
         "",
-        "<b>Phoenix perps</b>",
-        "Equity 12.345678 USDC · leverage n/a",
+        "📈 <b>Phoenix perps</b>",
+        "└ Equity 12.3456 USDC · leverage n/a",
         "",
         "⚠️ <b>Unreadable dlmm strategy</b>",
         "<code>Strat4444444444444444444444444444444444444</code>",
@@ -146,6 +200,42 @@ describe("messages", () => {
       ].join("\n"),
     );
     expect(strategiesMessage(vaultSummary, [])).toBe("🧩 <b>Demo</b> · strategies\n\nNo open strategies.");
+  });
+
+  it("renders a swap confirm as a receipt with a fresh quote", () => {
+    const usdc = { mint: "U", symbol: "USDC", decimals: 6 };
+    const sol = { mint: "S", symbol: "SOL", decimals: 9 };
+    expect(confirmMessage(vaultSummary, { kind: "swap", vault: VAULT, input: usdc, output: sol, amountBaseUnits: "1000000", slippageBps: 50, unverified: false }, quote)).toBe(
+      [
+        "🧾 <b>Review</b> · Demo",
+        "━━━━━━━━━━━━",
+        "<b>Swap 1 USDC → SOL</b>",
+        "├ You get <b>≈ 0.006666666 SOL</b>",
+        "└ Slippage 0.5% · impact 0.01%",
+        "━━━━━━━━━━━━",
+        "<blockquote>⚡ Real mainnet transaction from the vault. Cannot be undone.</blockquote>",
+      ].join("\n"),
+    );
+  });
+
+  it("renders a new LP position confirm with range, bins, and transactions", () => {
+    const liquidity = { tokenX: { mint: "M", symbol: "MET", decimals: 6 }, tokenY: { mint: "U", symbol: "USDC", decimals: 6 }, amountX: "0", amountY: "5000000", shape: "spot" as const };
+    const action: PendingAction = { kind: "dlmmOpen", vault: VAULT, lbPair: "P", pairLabel: "MET/USDC", lowerBinId: -26, upperBinId: 26, priceRange: { low: "0.4247", high: "0.4694" }, liquidity };
+    expect(confirmMessage(vaultSummary, action)).toBe(
+      [
+        "🧾 <b>Review</b> · Demo",
+        "━━━━━━━━━━━━",
+        "<b>Open MET/USDC LP</b>",
+        "├ Deposit 5 USDC",
+        "├ Range 0.4247 → 0.4694",
+        "├ Bins 52 · Spot",
+        "└ Transactions ~1",
+        "━━━━━━━━━━━━",
+        "<i>Creating the position costs a small refundable SOL rent from the manager wallet.</i>",
+        "<blockquote>⚡ Real mainnet transaction from the vault. Cannot be undone.</blockquote>",
+      ].join("\n"),
+    );
+    expect(confirmMessage(undefined, { kind: "vaultClaimFee", vault: VAULT })).toContain("from your manager wallet. Cannot be undone.");
   });
 
   it("escapes API-provided text", () => {
@@ -166,16 +256,22 @@ describe("messages", () => {
     const rendered = [
       HELP_MESSAGE,
       vaultsMessage([vaultSummary, hostileVault]),
-      holdingsMessage(hostileVault, { ...holdings, unpriced: [HOSTILE] }),
-      strategiesMessage(hostileVault, [...strategies, ...hostileStrategies]),
+      vaultMessage(
+        hostileVault,
+        { ...holdings, unpriced: [HOSTILE], tokens: [...holdings.tokens, { token: hostileToken, amount: "1", usd: null, shareBps: null }] },
+        [...strategies, ...hostileStrategies, hostileDlmm],
+      ),
+      strategiesMessage(hostileVault, [...strategies, ...hostileStrategies, hostileDlmm]),
       errorMessage(HOSTILE, HOSTILE),
-      vaultMessage(hostileVault),
       swapFormMessage(hostileSwap, "5"),
       swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),
       swapQuoteMessage(hostileSwap, { input: hostileToken, output: hostileToken }, "1", { ...quote, priceImpactPct: HOSTILE, routeLabels: [HOSTILE] }),
       lpFormMessage(hostileLp, "range error " + HOSTILE, { x: "1", y: "2" }),
-      lpFormMessage({ ...hostileLp, pool: undefined, poolChoices: [{ address: "P", label: HOSTILE }] }, undefined, undefined),
+      lpFormMessage({ ...hostileLp, pool: undefined, poolQuery: HOSTILE, poolChoices: [hostileChoice] }, undefined, undefined),
+      lpFormMessage({ ...hostileLp, pool: undefined }, undefined, undefined),
       lpFormMessage(hostileLp, { lowerBinId: 0, upperBinId: 5, binCount: 5, sides: "x", lowPrice: 1, highPrice: 2 }, undefined),
+      lpFormMessage({ ...hostileLp, side: "y", rangeBps: undefined }, { lowerBinId: 0, upperBinId: 5, binCount: 5, sides: "y", lowPrice: 1, highPrice: 2 }, { x: "1", y: "2" }),
+      lpFormMessage({ ...hostileLp, mode: "add", baseFeePct: null }, undefined, { x: "1", y: "2" }),
       confirmMessage(hostileVault, { kind: "dlmmOpen", vault: VAULT, lbPair: "P", pairLabel: HOSTILE, lowerBinId: 0, upperBinId: 150, priceRange: { low: HOSTILE, high: HOSTILE }, liquidity: hostileLiquidity }),
       confirmMessage(hostileVault, { kind: "swap", vault: VAULT, input: hostileToken, output: hostileToken, amountBaseUnits: "1", slippageBps: 50, unverified: true }, quote),
       settingsMessage(hostileDetail),
