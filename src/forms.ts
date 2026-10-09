@@ -923,8 +923,9 @@ function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps
   return { html: swapFormMessage(form, inputBalance), keyboard: keyboard(rows) };
 }
 
-const SHAPE_BUTTONS: Record<DlmmShape, string> = { spot: "▬ Spot", curve: "⛰ Curve", bidAsk: "🔻 Bid-Ask" };
-const marked = (text: string, on: boolean) => (on ? `${text} ✅` : text);
+const SHAPE_BUTTONS: Record<DlmmShape, [icon: string, text: string]> = { spot: ["▬", "Spot"], curve: ["⛰", "Curve"], bidAsk: ["🔻", "Bid-Ask"] };
+/** ✅ takes the icon's place rather than adding width; Telegram cuts long labels on phones. */
+const marked = ([icon, text]: [string, string], on: boolean) => `${on ? "✅" : icon} ${text}`;
 /** "±5%" around the price, or "+10%" above / "−10%" below it for one side. */
 export const rangePresetLabel = (side: LpSide, bps: number) => `${side === "both" ? "±" : side === "x" ? "+" : "−"}${bps / 100}%`;
 
@@ -939,16 +940,21 @@ function renderLpForm(formId: string, form: LpForm, holdings: Holdings): Rendere
     const choices = (form.poolChoices ?? []).map((choice, index) =>
       op(`${index + 1}. ${choice.pair} · ${choice.baseFeePct === null ? `bin ${choice.binStep}` : feePct(choice.baseFeePct)}`, { op: "pool", index }),
     );
-    return { html, keyboard: keyboard([...rowsOf(choices, 2), [op("🏊 Pick pool", { op: "ask", field: "pool" })], [back]]) };
+    return { html, keyboard: keyboard([...rowsOf(choices, 1), [op("🏊 Pick pool", { op: "ask", field: "pool" })], [back]]) };
   }
   const rows: Button[][] = [];
   if (form.mode === "open") {
-    const sideButtons: Record<LpSide, string> = { x: `💵 ${pool.tokenX.symbol} only`, both: "⚖️ Both", y: `🎯 ${pool.tokenY.symbol} only` };
-    rows.push(LP_SIDES.map((side, index) => op(marked(sideButtons[side], form.side === side), { op: "lpSide", index })));
+    const sideButtons: Record<LpSide, [string, string]> = { x: ["💵", `${pool.tokenX.symbol} only`], both: ["⚖️", "Both sides"], y: ["🎯", `${pool.tokenY.symbol} only`] };
+    const side = (s: LpSide) => op(marked(sideButtons[s], form.side === s), { op: "lpSide", index: LP_SIDES.indexOf(s) });
+    rows.push([side("x"), side("y")], [side("both")]);
   }
   rows.push(SHAPES.map((shape, index) => op(marked(SHAPE_BUTTONS[shape], form.shape === shape), { op: "shape", index })));
   if (form.mode === "open") {
-    rows.push(RANGE_PRESETS_BPS[form.side].map((bps) => op(marked(rangePresetLabel(form.side, bps), form.rangeBps === bps), { op: "range", bps })));
+    const presets = RANGE_PRESETS_BPS[form.side].map((bps) => {
+      const label = rangePresetLabel(form.side, bps);
+      return op(form.rangeBps === bps ? `✅ ${label}` : label, { op: "range", bps });
+    });
+    rows.push(...rowsOf(presets, 3));
     rows.push([op("✏️ Min price", { op: "ask", field: "minPrice" }), op("✏️ Max price", { op: "ask", field: "maxPrice" })]);
   }
   const validRange = range !== undefined && typeof range !== "string";
@@ -958,8 +964,10 @@ function renderLpForm(formId: string, form: LpForm, holdings: Holdings): Rendere
   if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "ask", field: "amountY" }));
   rows.push(amountButtons);
   if ((form.amountX || form.amountY) && (form.mode === "add" || validRange)) rows.push([op("✅ Review", { op: "review" })]);
-  if (form.mode === "open") rows.push([...(validRange ? [op("🫙 Empty position", { op: "empty" })] : []), op("🏊 Change pool", { op: "ask", field: "pool" })]);
-  rows.push([back]);
+  if (form.mode === "open") {
+    if (validRange) rows.push([op("🫙 Empty position only", { op: "empty" })]);
+    rows.push([op("🏊 Change pool", { op: "ask", field: "pool" }), back]);
+  } else rows.push([back]);
   return { html, keyboard: keyboard(rows) };
 }
 

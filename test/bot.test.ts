@@ -556,7 +556,7 @@ describe("LP form", () => {
       ].join("\n"),
     );
     const rows = ui.lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text));
-    expect(rows?.[0]).toEqual(["1. SOL/USDC · 0.1%", "2. SOL/USDC · bin 80"]);
+    expect(rows?.slice(0, 2)).toEqual([["1. SOL/USDC · 0.1%"], ["2. SOL/USDC · bin 80"]]);
     expect(ui.buttons().some((b) => b.text.includes("BONK"))).toBe(false);
     await ui.click("1. SOL/USDC · 0.1%");
     expect(ui.api.getPool).toHaveBeenCalledWith(VAULT, POOL);
@@ -571,7 +571,7 @@ describe("LP form", () => {
     await ui.fill("✏️ Max price", "149");
     expect(ui.lastScreen().text).toContain("holds only USDC");
     // A typed range picks its side, so the side buttons follow it.
-    expect(ui.buttons().map((b) => b.text)).toContain("🎯 USDC only ✅");
+    expect(ui.buttons().map((b) => b.text)).toContain("✅ USDC only");
     expect(ui.buttons().map((b) => b.text)).not.toContain("💧 SOL amount");
     await ui.fill("💧 USDC amount", "2");
     await ui.click("✅ Review");
@@ -584,17 +584,28 @@ describe("LP form", () => {
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     const labels = () => ui.buttons().map((b) => b.text);
-    expect(labels()).toEqual(expect.arrayContaining(["⚖️ Both ✅", "▬ Spot ✅", "±5% ✅", "💧 SOL amount", "💧 USDC amount"]));
+    expect(labels()).toEqual(expect.arrayContaining(["✅ Both sides", "✅ Spot", "✅ ±5%", "💧 SOL amount", "💧 USDC amount"]));
+    expect(ui.lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text))).toEqual([
+      ["💵 SOL only", "🎯 USDC only"],
+      ["✅ Both sides"],
+      ["✅ Spot", "⛰ Curve", "🔻 Bid-Ask"],
+      ["±1%", "±2%", "✅ ±5%"],
+      ["±10%", "±20%"],
+      ["✏️ Min price", "✏️ Max price"],
+      ["💧 SOL amount", "💧 USDC amount"],
+      ["🫙 Empty position only"],
+      ["🏊 Change pool", "⬅️ Vault"],
+    ]);
     await ui.fill("💧 USDC amount", "50%");
 
     await ui.click("💵 SOL only");
     expect(ui.lastScreen().text).toContain("💵 <b>SOL only</b> · sell as price rises · Spot · +10%");
     expect(ui.lastScreen().text).toContain("holds only SOL");
     expect(ui.lastScreen().text).toContain("<b>Deposit</b>\n└ SOL <i>not set</i>");
-    expect(labels()).toEqual(expect.arrayContaining(["💵 SOL only ✅", "⚖️ Both", "+10% ✅", "+90%", "💧 SOL amount"]));
+    expect(labels()).toEqual(expect.arrayContaining(["✅ SOL only", "⚖️ Both sides", "✅ +10%", "+90%", "💧 SOL amount"]));
     expect(labels()).not.toContain("💧 USDC amount");
 
-    await ui.click("⚖️ Both");
+    await ui.click("⚖️ Both sides");
     expect(ui.lastScreen().text).toContain("└ USDC <i>not set</i>");
 
     await ui.click("🎯 USDC only");
@@ -602,8 +613,8 @@ describe("LP form", () => {
     expect(ui.lastScreen().text).toContain("holds only USDC");
     expect(labels()).not.toContain("💧 SOL amount");
     await ui.click("−20%");
-    expect(labels()).toContain("−20% ✅");
-    expect(labels()).not.toContain("−10% ✅");
+    expect(labels()).toContain("✅ −20%");
+    expect(labels()).not.toContain("✅ −10%");
 
     await ui.fill("✏️ Min price", "120");
     expect(ui.lastScreen().text).toContain("· Spot · custom");
@@ -641,7 +652,7 @@ describe("LP form", () => {
     await ui.click("➕ Add liquidity");
     expect(ui.lastScreen().text).toMatch(/^➕ <b>SOL\/USDC<\/b> · add liquidity · bin 10/);
     expect(ui.buttons().map((b) => b.text)).not.toContain("✏️ Min price");
-    expect(ui.buttons().map((b) => b.text)).not.toContain("⚖️ Both ✅");
+    expect(ui.buttons().map((b) => b.text)).not.toContain("✅ Both sides");
     await ui.click("⛰ Curve");
     await ui.fill("💧 USDC amount", "max");
     await ui.click("✅ Review");
@@ -1174,7 +1185,7 @@ describe("strategy setup", () => {
     await ui.fill("🏊 Pick pool", POOL);
     await ui.fill("✏️ Min price", "148");
     await ui.fill("✏️ Max price", "152");
-    await ui.click("🫙 Empty position");
+    await ui.click("🫙 Empty position only");
     expect(ui.lastScreen().text).toContain("<b>Create an empty SOL/USDC position</b>");
     await confirm(ui);
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/initialize", { vault: VAULT, lbPair: POOL, lowerBinId: -114, upperBinId: -85 });
@@ -1186,7 +1197,7 @@ describe("strategy setup", () => {
     await openVault(ui, "➕ New LP");
     await ui.fill("🏊 Pick pool", POOL);
     await ui.click("±10%");
-    await ui.click("🫙 Empty position");
+    await ui.click("🫙 Empty position only");
     expect(ui.alerts().at(-1)).toMatch(/^An empty position can span at most 70 bins; this range has \d+\. Narrow it\.$/);
     expect(ui.api.build).not.toHaveBeenCalled();
   });
