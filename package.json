@@ -14,7 +14,7 @@
   },
   "packageManager": "yarn@1.22.22",
   "dependencies": {
-    "@hedginvault/sdk": "file:./vendor/hedginvault-sdk-0adffd0b1e8b.tgz",
+    "@hedginvault/sdk": "file:./vendor/hedginvault-sdk-463e4ffbc924.tgz",
     "@solana/web3.js": "^1.98.4",
     "bs58": "4.0.1",
     "telegraf": "^4",

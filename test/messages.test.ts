@@ -25,6 +25,7 @@ import {
   swapQuoteMessage,
   vaultMessage,
   vaultsMessage,
+  positionMessage,
 } from "../src/messages";
 import type { LpForm, OrderForm, SwapForm, VaultForm } from "../src/forms";
 import { VAULT, holdings, navHistory, phoenixNone, phoenixReady, phoenixRegistered, quote, requestQueue, strategies, strategyHistory, vaultDetail, vaultSummary } from "./fixtures";
@@ -147,7 +148,9 @@ describe("messages", () => {
         "<code>USDC ████░░░░░░ 40.0%</code> 1 · $1.00",
         "",
         "<b>Positions</b>",
-        "🌊 <b>SOL/USDC</b> LP · 🟢 in range · 0.5 SOL + 75 USDC",
+        "🌊 <b>SOL/USDC</b> LP · 🟢 in range",
+        "<code>140 ├─────●────┤ 160</code> now 150",
+        "└ 0.5 SOL + 75 USDC",
         "📈 <b>Perps</b> · 12.3456 USDC equity · leverage n/a",
         "⚠️ Unreadable dlmm strategy",
       ].join("\n"),
@@ -161,9 +164,55 @@ describe("messages", () => {
     expect(lines.some((line) => line.includes("Partial view") || line.includes("Positions"))).toBe(false);
     const [, dlmm] = strategies;
     if (dlmm?.type !== "dlmm") throw new Error("fixture missing");
-    expect(vaultMessage(vaultSummary, complete, [{ ...dlmm, activePrice: "170" }, { type: "phoenix", address: "S", equity: "1995800", leverage: 0 }])).toContain(
-      "<b>Positions</b>\n🌊 <b>SOL/USDC</b> LP · 🟠 out of range · 0.5 SOL + 75 USDC\n📈 <b>Perps</b> · 1.9958 USDC equity · 0.00x",
+    const priced = { ...dlmm, tokenX: { ...dlmm.tokenX, priceUsd: 150 }, tokenY: { ...dlmm.tokenY, priceUsd: 1 }, pnlUsd: -1.5, pnlPct: -2.25 };
+    expect(vaultMessage(vaultSummary, complete, [{ ...priced, activePrice: "170" }, { type: "phoenix", address: "S", equity: "1995800", leverage: 0 }])).toContain(
+      [
+        "<b>Positions</b>",
+        "🌊 <b>SOL/USDC</b> LP · 🟠 out of range",
+        "<code>140 ├─────────▶┤ 160</code> now 170",
+        "└ $150.00 · PnL 🔴 -$1.50 (-2.25%) · fees $0.40",
+        "📈 <b>Perps</b> · 1.9958 USDC equity · 0.00x",
+      ].join("\n"),
     );
+  });
+
+  it("shows one LP position as a card with value, PnL, fees, range, and age", () => {
+    const [, dlmm] = strategies;
+    if (dlmm?.type !== "dlmm") throw new Error("fixture missing");
+    const priced = { ...dlmm, tokenX: { ...dlmm.tokenX, priceUsd: 150 }, tokenY: { ...dlmm.tokenY, priceUsd: 1 }, pnlUsd: -1.5, pnlPct: -2.25, createdTs: 1_790_000_000 };
+    expect(positionMessage(vaultSummary, priced, 1_790_000_000 + 106_200)).toBe(
+      [
+        "🌊 <b>SOL/USDC</b> · Meteora DLMM",
+        `Demo · <a href="https://solscan.io/account/${dlmm.position}">Position Pos1…1111 ↗</a>`,
+        "━━━━━━━━━━━━",
+        "🟢 <b>In range</b> · 50% through",
+        "<code>140 ├─────●────┤ 160</code>",
+        "",
+        "💰 <b>Value $150.00</b>",
+        "├ 0.5 SOL ($75.00)",
+        "└ 75 USDC ($75.00)",
+        "",
+        "📈 <b>PnL 🔴 -$1.50 (-2.25%)</b>",
+        "└ <i>All-time, from Meteora</i>",
+        "",
+        "🎁 <b>Unclaimed fees $0.40</b>",
+        "├ 0.001 SOL",
+        "└ 0.25 USDC",
+        "",
+        "🎯 <b>Range</b> · USDC per SOL",
+        "├ Min 140",
+        "├ Now <b>150</b>",
+        "└ Max 160",
+        "",
+        "📅 Opened 2026-09-21 14:13 UTC · open 1d 5h",
+        `<code>${dlmm.position}</code>`,
+      ].join("\n"),
+    );
+    const below = positionMessage(vaultSummary, { ...dlmm, activePrice: "130" }, 0);
+    expect(below).toContain("🟠 <b>Out of range</b> · price below your range\n<code>140 ├◀─────────┤ 160</code>");
+    expect(below).toContain("💰 <b>Value n/a</b>\n├ 0.5 SOL\n└ 75 USDC");
+    expect(below).not.toContain("PnL");
+    expect(below).not.toContain("Opened");
   });
 
   it("draws the price on a range gauge, with an arrow at the edge when out of range", () => {
@@ -262,6 +311,7 @@ describe("messages", () => {
         [...strategies, ...hostileStrategies, hostileDlmm],
       ),
       strategiesMessage(hostileVault, [...strategies, ...hostileStrategies, hostileDlmm]),
+      hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, { ...hostileDlmm, pnlUsd: -1, pnlPct: -1, createdTs: 1 }, 2) : "",
       errorMessage(HOSTILE, HOSTILE),
       swapFormMessage(hostileSwap, "5"),
       swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),

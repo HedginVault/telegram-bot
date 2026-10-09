@@ -219,7 +219,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         [confirmButton(deps, "🗑 Close position", { kind: "dlmmClose", ...base })],
         [button("🔄 Refresh", screen), back],
       );
-      return { html: positionMessage(vault, strategy), keyboard: keyboard(rows) };
+      return { html: positionMessage(vault, strategy, Math.floor(Date.now() / 1000)), keyboard: keyboard(rows) };
     }
     case "newSwap": {
       const vault = await findVault(api, screen.vault);

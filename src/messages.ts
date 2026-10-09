@@ -110,6 +110,26 @@ type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
 /** Display only: compares the API's decimal price strings as numbers. */
 const inRange = (s: DlmmStrategy) => Number(s.lowerPrice) <= Number(s.activePrice) && Number(s.activePrice) <= Number(s.upperPrice);
 const rangeStatus = (s: DlmmStrategy) => (inRange(s) ? "🟢 in range" : "🟠 out of range");
+/** Where the price sits: inside the range (with how far through it), or which side it left by. */
+function rangePlace(s: DlmmStrategy): string {
+  const [lower, active, upper] = [Number(s.lowerPrice), Number(s.activePrice), Number(s.upperPrice)];
+  if (active < lower) return "🟠 <b>Out of range</b> · price below your range";
+  if (active > upper) return "🟠 <b>Out of range</b> · price above your range";
+  const through = upper > lower ? Math.round(((active - lower) / (upper - lower)) * 100) : 0;
+  return `🟢 <b>In range</b> · ${through}% through`;
+}
+const gaugeLine = (s: DlmmStrategy) =>
+  `<code>${price(s.lowerPrice)} ${rangeGauge(Number(s.lowerPrice), Number(s.activePrice), Number(s.upperPrice))} ${price(s.upperPrice)}</code>`;
+/** USD of a base-unit amount; null when the token has no price. Display only. */
+const tokenUsd = (baseUnits: string, token: { decimals: number; priceUsd?: number | null }) =>
+  baseUnits === "0" ? 0 : token.priceUsd == null ? null : (Number(baseUnits) / 10 ** token.decimals) * token.priceUsd;
+const sumUsd = (parts: (number | null)[]) => (parts.some((part) => part === null) ? null : parts.reduce<number>((total, part) => total + (part ?? 0), 0));
+const lpValueUsd = (s: DlmmStrategy) => sumUsd([tokenUsd(s.amountX, s.tokenX), tokenUsd(s.amountY, s.tokenY)]);
+const lpFeesUsd = (s: DlmmStrategy) => sumUsd([tokenUsd(s.pendingFeeX, s.tokenX), tokenUsd(s.pendingFeeY, s.tokenY)]);
+const signedUsd = (value: number) => `${value < 0 ? "-" : value > 0 ? "+" : ""}${compactUsd(Math.abs(value))}`;
+/** "🔴 -$0.12 (-4.51%)", or undefined when Meteora reported no PnL. */
+const lpPnl = (s: DlmmStrategy) =>
+  s.pnlUsd == null ? undefined : `${signIcon(s.pnlUsd)} ${signedUsd(s.pnlUsd)}${s.pnlPct == null ? "" : ` (${s.pnlPct > 0 ? "+" : ""}${s.pnlPct.toFixed(2)}%)`}`;
 const pair = (x: TokenRef, y: TokenRef) => `${escapeHtml(x.symbol)}/${escapeHtml(y.symbol)}`;
 const leverage = (value: number | null) => (value === null ? "n/a" : `${value.toFixed(2)}x`);
 const SPARK = "▁▂▃▄▅▆▇█";
@@ -206,8 +226,17 @@ function tokenRows(tokens: Holdings["tokens"]): string[] {
 function positionRows(strategies: Strategy[]): string[] {
   return strategies.flatMap((s) => {
     switch (s.type) {
-      case "dlmm":
-        return [`🌊 <b>${pair(s.tokenX, s.tokenY)}</b> LP · ${rangeStatus(s)} · ${compact(s.amountX, s.tokenX.decimals, s.tokenX.symbol)} + ${compact(s.amountY, s.tokenY.decimals, s.tokenY.symbol)}`];
+      case "dlmm": {
+        const value = lpValueUsd(s);
+        const fees = lpFeesUsd(s);
+        const pnl = lpPnl(s);
+        const facts = [
+          value === null ? `${compact(s.amountX, s.tokenX.decimals, s.tokenX.symbol)} + ${compact(s.amountY, s.tokenY.decimals, s.tokenY.symbol)}` : compactUsd(value),
+          ...(pnl ? [`PnL ${pnl}`] : []),
+          ...(fees === null ? [] : [`fees ${compactUsd(fees)}`]),
+        ];
+        return [`🌊 <b>${pair(s.tokenX, s.tokenY)}</b> LP · ${rangeStatus(s)}`, `${gaugeLine(s)} now ${price(s.activePrice)}`, `└ ${facts.join(" · ")}`];
+      }
       case "phoenix":
         // Phoenix equity is in USDC atoms (6 decimals).
         return [`📈 <b>Perps</b> · ${compact(s.equity, 6, "USDC")} equity · ${s.leverage === null ? "leverage n/a" : leverage(s.leverage)}`];
@@ -281,16 +310,37 @@ export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): 
   return [`${title} (${strategies.length})`, ...blocks.map((block) => block.join("\n"))].join("\n\n");
 }
 
-export function positionMessage(vault: VaultSummary, strategy: DlmmStrategy): string {
-  const { tokenX, tokenY } = strategy;
+/** One LP position as a card: where the price is, what it is worth, PnL, fees, and range. */
+export function positionMessage(vault: VaultSummary, s: DlmmStrategy, nowSeconds: number): string {
+  const { tokenX, tokenY } = s;
+  const withUsd = (baseUnits: string, token: typeof tokenX) => {
+    const value = tokenUsd(baseUnits, token);
+    return `${compact(baseUnits, token.decimals, token.symbol)}${value === null ? "" : ` (${compactUsd(value)})`}`;
+  };
+  const value = lpValueUsd(s);
+  const fees = lpFeesUsd(s);
+  const pnl = lpPnl(s);
   const lines = [
-    `⚙️ <b>${escapeHtml(tokenX.symbol)}/${escapeHtml(tokenY.symbol)} position</b> · ${escapeHtml(vault.name)}`,
-    address(strategy.position),
+    `🌊 <b>${pair(tokenX, tokenY)}</b> · Meteora DLMM`,
+    `${escapeHtml(vault.name)} · <a href="https://solscan.io/account/${encodeURIComponent(s.position)}">Position ${escapeHtml(shortAddress(s.position))} ↗</a>`,
+    DIVIDER,
+    rangePlace(s),
+    gaugeLine(s),
     "",
-    `Range ${escapeHtml(strategy.lowerPrice)} to ${escapeHtml(strategy.upperPrice)} · now <b>${escapeHtml(strategy.activePrice)}</b>`,
-    `Holds ${amount(strategy.amountX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.amountY, tokenY.decimals, tokenY.symbol)}`,
-    `Unclaimed fees ${amount(strategy.pendingFeeX, tokenX.decimals, tokenX.symbol)} + ${amount(strategy.pendingFeeY, tokenY.decimals, tokenY.symbol)}`,
+    `💰 <b>Value ${value === null ? "n/a" : compactUsd(value)}</b>`,
+    ...tree([withUsd(s.amountX, tokenX), withUsd(s.amountY, tokenY)]),
   ];
+  if (pnl) lines.push("", `📈 <b>PnL ${pnl}</b>`, "└ <i>All-time, from Meteora</i>");
+  lines.push(
+    "",
+    `🎁 <b>Unclaimed fees${fees === null ? "" : ` ${compactUsd(fees)}`}</b>`,
+    ...tree([compact(s.pendingFeeX, tokenX.decimals, tokenX.symbol), compact(s.pendingFeeY, tokenY.decimals, tokenY.symbol)]),
+    "",
+    `🎯 <b>Range</b> · ${escapeHtml(tokenY.symbol)} per ${escapeHtml(tokenX.symbol)}`,
+    ...tree([`Min ${price(s.lowerPrice)}`, `Now <b>${price(s.activePrice)}</b>`, `Max ${price(s.upperPrice)}`]),
+  );
+  if (s.createdTs !== undefined) lines.push("", `📅 Opened ${utc(s.createdTs)} · open ${duration(Math.max(0, nowSeconds - s.createdTs))}`);
+  lines.push(address(s.position));
   return lines.join("\n");
 }
 

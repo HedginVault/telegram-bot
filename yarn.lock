@@ -144,9 +144,9 @@
     bs58 "4.0.1"
     zod "^3.23"
 
-"@hedginvault/sdk@file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz":
+"@hedginvault/sdk@file:./vendor/hedginvault-sdk-463e4ffbc924.tgz":
   version "0.1.0"
-  resolved "file:./vendor/hedginvault-sdk-c190a5ac83c8.tgz#6a3f2ec92ee62d1049ec140b739fd4f4c401077d"
+  resolved "file:./vendor/hedginvault-sdk-463e4ffbc924.tgz#36c2fc0e39868fecf34293aa6aa72c0e22642373"
   dependencies:
     bs58 "4.0.1"
     zod "^3.23"
