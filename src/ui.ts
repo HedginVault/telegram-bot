@@ -20,6 +20,8 @@ export type FormOp =
   | { op: "shape"; index: number }
   /** LP form: pick `LP_SIDES[index]`. */
   | { op: "lpSide"; index: number }
+  /** LP form: open the amount picker for tokenX (0) or tokenY (1), or close it (2). */
+  | { op: "amountPick"; index: number }
   | { op: "slippage"; bps: number }
   | { op: "share"; bps: number }
   | { op: "ask"; field: TextField }
@@ -160,6 +162,8 @@ function encodeOp(op: FormOp): string {
       return `sp${op.index}`;
     case "lpSide":
       return `ls${op.index}`;
+    case "amountPick":
+      return `ap${op.index}`;
   }
 }
 
@@ -168,7 +172,7 @@ export const MAX_MARKET_BUTTONS = 16;
 
 function decodeOp(text: string): FormOp | undefined {
   for (const plain of PLAIN_OPS) if (text === plain) return { op: plain };
-  const match = /^(sl|sh|rg|ask|tk|pl|mk|sp|ls)(\d{1,5})$/.exec(text);
+  const match = /^(sl|sh|rg|ask|tk|pl|mk|sp|ls|ap)(\d{1,5})$/.exec(text);
   if (!match) return undefined;
   const n = Number(match[2]);
   switch (match[1]) {
@@ -193,6 +197,8 @@ function decodeOp(text: string): FormOp | undefined {
       return n < 3 ? { op: "shape", index: n } : undefined;
     case "ls":
       return n < 3 ? { op: "lpSide", index: n } : undefined;
+    case "ap":
+      return n < 3 ? { op: "amountPick", index: n } : undefined;
   }
   return undefined;
 }

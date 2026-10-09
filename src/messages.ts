@@ -775,6 +775,19 @@ function depositAmount(input: AmountInput | undefined, token: TokenRef, balanceB
   return balanceBaseUnits === undefined ? share : `${compactUnits(((BigInt(balanceBaseUnits) * BigInt(input.bps)) / 10_000n).toString(), token.decimals)} (${share})`;
 }
 
+/** The LP amount picker: one token's balance and its current amount. */
+export function lpAmountMessage(form: LpForm, token: TokenRef, balanceBaseUnits: string): string {
+  const current = form.picking ? form[form.picking] : undefined;
+  return [
+    `💧 <b>How much ${escapeHtml(token.symbol)}?</b>`,
+    DIVIDER,
+    `Vault has <b>${amount(balanceBaseUnits, token.decimals, token.symbol)}</b>`,
+    `Now ${current ? escapeHtml(describeAmount(current, token, (base, decimals) => amount(base, decimals, "").trim())) : "<i>not set</i>"}`,
+    "",
+    "<i>Tap a share of the balance, or ✏️ Custom amount to type one.</i>",
+  ].join("\n");
+}
+
 export function lpFormMessage(form: LpForm, range: PriceRange | string | undefined, balances: { x: string; y: string } | undefined): string {
   const pool = form.pool;
   if (!pool) return poolPickerMessage(form);

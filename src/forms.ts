@@ -9,7 +9,7 @@ import {
   parseUnits,
 } from "@hedginvault/sdk";
 import type { PendingAction, VaultChanges } from "./actions";
-import { lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapFormMessage, swapQuoteMessage, trackFormMessage, vaultFormMessage } from "./messages";
+import { lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapFormMessage, swapQuoteMessage, trackFormMessage, vaultFormMessage } from "./messages";
 import {
   type Button,
   type FormOp,
@@ -94,6 +94,8 @@ export interface LpForm {
   shape: DlmmShape;
   amountX?: AmountInput;
   amountY?: AmountInput;
+  /** Which token's amount picker replaces the form, if any. */
+  picking?: "amountX" | "amountY";
   /** The last typed pool search and its results, shown as buttons. */
   poolQuery?: string;
   poolChoices?: PoolChoice[];
@@ -423,8 +425,8 @@ const PROMPTS: Record<TextField, string> = {
   pool: "🏊 Paste a Meteora DLMM pool address, or type a token symbol to search.",
   minPrice: "⬇️ Send the minimum price, in the pool's quote token per base token.",
   maxPrice: "⬆️ Send the maximum price, in the pool's quote token per base token.",
-  amountX: 'How much of the first token? Send "1.5", "25%", or "max". Send "0" to clear.',
-  amountY: 'How much of the second token? Send "1.5", "25%", or "max". Send "0" to clear.',
+  amountX: 'Send an exact amount like "1.5", or a share like "25%". Send "0" to clear.',
+  amountY: 'Send an exact amount like "1.5", or a share like "25%". Send "0" to clear.',
   symbol: 'Send the Phoenix market symbol, e.g. "SOL".',
   size: 'How much of the base asset? Send a size like "0.5".',
   price: 'Send the limit price in USD, e.g. "142.5".',
@@ -530,6 +532,18 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
       const shape = SHAPES[op.index];
       if (!shape) throw expired();
       form.shape = shape;
+      return show;
+    }
+    case "amountPick": {
+      if (!form.pool) throw new InputError("Pick a pool first.");
+      form.picking = op.index === 0 ? "amountX" : op.index === 1 ? "amountY" : undefined;
+      return show;
+    }
+    case "share": {
+      if (!form.picking) throw expired();
+      if (form.picking === "amountX") form.amountX = { kind: "share", bps: op.bps };
+      else form.amountY = { kind: "share", bps: op.bps };
+      form.picking = undefined;
       return show;
     }
     case "lpSide": {
@@ -711,6 +725,7 @@ export async function applyFormText(formId: string, field: TextField, text: stri
       const value = text.trim() === "0" ? undefined : parseAmountInput(text, token.decimals);
       if (field === "amountX") form.amountX = value;
       else form.amountY = value;
+      form.picking = undefined;
       return;
     }
     default:
@@ -923,6 +938,8 @@ function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps
   return { html: swapFormMessage(form, inputBalance), keyboard: keyboard(rows) };
 }
 
+/** Share-of-balance shortcuts in the LP amount picker. */
+const AMOUNT_SHARES_BPS = [2500, 5000, 7500, 10_000] as const;
 const SHAPE_BUTTONS: Record<DlmmShape, [icon: string, text: string]> = { spot: ["▬", "Spot"], curve: ["⛰", "Curve"], bidAsk: ["🔻", "Bid-Ask"] };
 /** ✅ takes the icon's place rather than adding width; Telegram cuts long labels on phones. */
 const marked = ([icon, text]: [string, string], on: boolean) => `${on ? "✅" : icon} ${text}`;
@@ -942,6 +959,19 @@ function renderLpForm(formId: string, form: LpForm, holdings: Holdings): Rendere
     );
     return { html, keyboard: keyboard([...rowsOf(choices, 1), [op("🏊 Pick pool", { op: "ask", field: "pool" })], [back]]) };
   }
+  if (form.picking && balances) {
+    const field = form.picking;
+    const token = field === "amountX" ? pool.tokenX : pool.tokenY;
+    const current = form[field];
+    const shares = AMOUNT_SHARES_BPS.map((bps) => {
+      const label = `${bps / 100}%`;
+      return op(current?.kind === "share" && current.bps === bps ? `✅ ${label}` : label, { op: "share", bps });
+    });
+    return {
+      html: lpAmountMessage(form, token, field === "amountX" ? balances.x : balances.y),
+      keyboard: keyboard([shares, [op("✏️ Custom amount", { op: "ask", field })], [op("⬅️ Back", { op: "amountPick", index: 2 })]]),
+    };
+  }
   const rows: Button[][] = [];
   if (form.mode === "open") {
     const sideButtons: Record<LpSide, [string, string]> = { x: ["💵", `${pool.tokenX.symbol} only`], both: ["⚖️", "Both sides"], y: ["🎯", `${pool.tokenY.symbol} only`] };
@@ -960,8 +990,8 @@ function renderLpForm(formId: string, form: LpForm, holdings: Holdings): Rendere
   const validRange = range !== undefined && typeof range !== "string";
   const sides = validRange ? range.sides : "both";
   const amountButtons: Button[] = [];
-  if (sides !== "y") amountButtons.push(op(`💧 ${pool.tokenX.symbol} amount`, { op: "ask", field: "amountX" }));
-  if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "ask", field: "amountY" }));
+  if (sides !== "y") amountButtons.push(op(`💧 ${pool.tokenX.symbol} amount`, { op: "amountPick", index: 0 }));
+  if (sides !== "x") amountButtons.push(op(`💧 ${pool.tokenY.symbol} amount`, { op: "amountPick", index: 1 }));
   rows.push(amountButtons);
   if ((form.amountX || form.amountY) && (form.mode === "add" || validRange)) rows.push([op("✅ Review", { op: "review" })]);
   if (form.mode === "open") {

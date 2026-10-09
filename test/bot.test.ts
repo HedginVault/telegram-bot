@@ -517,8 +517,10 @@ describe("LP form", () => {
     await ui.fill("✏️ Max price", "152");
     expect(ui.lastScreen().text).toContain("⚖️ <b>Both sides</b> · Bid-Ask · custom");
     expect(ui.lastScreen().text).toContain("<i>29 bins · holds both tokens</i>");
-    await ui.fill("💧 SOL amount", "0.005");
-    await ui.fill("💧 USDC amount", "50%");
+    await ui.click("💧 SOL amount");
+    await ui.fill("✏️ Custom amount", "0.005");
+    await ui.click("💧 USDC amount");
+    await ui.fill("✏️ Custom amount", "50%");
     expect(ui.lastScreen().text).toContain("<b>Deposit</b>\n├ SOL 0.005\n└ USDC 0.5 (50% of balance)");
     await ui.click("✅ Review");
     expect(ui.lastScreen().text).toContain(
@@ -573,7 +575,8 @@ describe("LP form", () => {
     // A typed range picks its side, so the side buttons follow it.
     expect(ui.buttons().map((b) => b.text)).toContain("✅ USDC only");
     expect(ui.buttons().map((b) => b.text)).not.toContain("💧 SOL amount");
-    await ui.fill("💧 USDC amount", "2");
+    await ui.click("💧 USDC amount");
+    await ui.fill("✏️ Custom amount", "2");
     await ui.click("✅ Review");
     expect(ui.alerts()).toContain("That is more than the vault holds.");
     expect(ui.api.build).not.toHaveBeenCalled();
@@ -596,7 +599,8 @@ describe("LP form", () => {
       ["🫙 Empty position only"],
       ["🏊 Change pool", "⬅️ Vault"],
     ]);
-    await ui.fill("💧 USDC amount", "50%");
+    await ui.click("💧 USDC amount");
+    await ui.fill("✏️ Custom amount", "50%");
 
     await ui.click("💵 SOL only");
     expect(ui.lastScreen().text).toContain("💵 <b>SOL only</b> · sell as price rises · Spot · +10%");
@@ -629,11 +633,30 @@ describe("LP form", () => {
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     await ui.click(side);
-    await ui.fill(amountButton, "max");
+    await ui.click(amountButton);
+    await ui.click("100%");
     await ui.click("✅ Review");
     await ui.click("✅ Confirm & send");
     await ui.settle();
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/open", expect.objectContaining(expected));
+  });
+
+  it("picks an amount as a share of the vault balance, marks it, and goes back without changes", async () => {
+    const ui = setup(tradingApi());
+    await newPosition(ui);
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click("💧 USDC amount");
+    expect(ui.lastScreen().text).toBe(
+      ["💧 <b>How much USDC?</b>", "━━━━━━━━━━━━", "Vault has <b>1 USDC</b>", "Now <i>not set</i>", "", "<i>Tap a share of the balance, or ✏️ Custom amount to type one.</i>"].join("\n"),
+    );
+    const rows = () => ui.lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text));
+    expect(rows()).toEqual([["25%", "50%", "75%", "100%"], ["✏️ Custom amount"], ["⬅️ Back"]]);
+    await ui.click("75%");
+    expect(ui.lastScreen().text).toContain("└ USDC 0.75 (75% of balance)");
+    await ui.click("💧 USDC amount");
+    expect(rows()?.[0]).toEqual(["25%", "50%", "✅ 75%", "100%"]);
+    await ui.click("⬅️ Back");
+    expect(ui.lastScreen().text).toContain("└ USDC 0.75 (75% of balance)");
   });
 
   it("rejects a pasted pool that does not include the deposit token", async () => {
@@ -654,7 +677,8 @@ describe("LP form", () => {
     expect(ui.buttons().map((b) => b.text)).not.toContain("✏️ Min price");
     expect(ui.buttons().map((b) => b.text)).not.toContain("✅ Both sides");
     await ui.click("⛰ Curve");
-    await ui.fill("💧 USDC amount", "max");
+    await ui.click("💧 USDC amount");
+    await ui.fill("✏️ Custom amount", "max");
     await ui.click("✅ Review");
     expect(ui.lastScreen().text).toContain("<b>Add to SOL/USDC LP</b>\n├ Deposit 1 USDC\n└ Shape Curve");
     await ui.click("✅ Confirm & send");

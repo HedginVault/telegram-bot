@@ -8,6 +8,8 @@ const ops: FormOp[] = [
   { op: "shape", index: 2 },
   { op: "lpSide", index: 0 },
   { op: "lpSide", index: 2 },
+  { op: "amountPick", index: 0 },
+  { op: "amountPick", index: 2 },
   { op: "quote" },
   { op: "review" },
   { op: "slippage", bps: 300 },
@@ -65,7 +67,7 @@ describe("screen callback data", () => {
   });
 
   it("rejects data no button of ours produces", () => {
-    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, `o:${ID}:sl0`, `o:${ID}:sl99999`, `o:${ID}:ask99`, `o:${ID}:hack`, `o:${ID}:mk16`, `o:${ID}:shape`, `o:${ID}:sp3`, `o:${ID}:ls3`, `h:${VAULT}`, `f:${ID}x`, "c:../etc/pass", `vaults:${VAULT}`]) {
+    for (const data of ["", "v:", "v:not-base58-0OIl", `x:${VAULT}`, `o:${ID}:sl0`, `o:${ID}:sl99999`, `o:${ID}:ask99`, `o:${ID}:hack`, `o:${ID}:mk16`, `o:${ID}:shape`, `o:${ID}:sp3`, `o:${ID}:ls3`, `o:${ID}:ap3`, `h:${VAULT}`, `f:${ID}x`, "c:../etc/pass", `vaults:${VAULT}`]) {
       expect(decodeScreen(data)).toBeUndefined();
     }
   });
