@@ -171,3 +171,33 @@ Telegram user IDs) to limit replies to those users during a staged rollout.
 `HEDGE_API_BASE_URL` defaults to production (`https://hedgin.xyz`), which runs on
 Solana mainnet. Reads are harmless. Any future command that signs or sends a transaction
 moves real funds. Never commit `.env`, `data/`, API keys, or keypair files.
+
+## Deploy
+
+A push to `main` builds `ghcr.io/hedginvault/telegram-bot`, runs typecheck, tests, and build,
+then rolls out one pod to namespace `hedgevault-prod` (`.github/workflows/build-deploy.yml`).
+The bot long-polls Telegram, so it has no Service or Ingress. The Deployment uses the
+`Recreate` strategy because Telegram accepts one poller per token.
+
+The wallet store lives on PersistentVolumeClaim `telegram-bot-data` (`k8s/pvc.yaml`,
+`local-path`, mounted at `/data`). Deleting that claim deletes every stored wallet. On this
+single-node cluster the store and `WALLET_ENCRYPTION_KEY` sit on the same host, so the
+"keep them apart" advice in Custody above does not hold there; back up the volume and the
+key separately.
+
+One-time setup, done by an operator:
+
+1. GitHub repository secret `KUBECONFIG` (base64 kubeconfig, same as the other services) and
+   a `production` Environment.
+2. The runtime Secret. The workflow checks it exists and never creates it:
+
+   ```sh
+   kubectl -n hedgevault-prod create secret generic telegram-bot-secrets \
+     --from-literal=TELEGRAM_BOT_TOKEN='<botfather token>' \
+     --from-literal=WALLET_ENCRYPTION_KEY="$(openssl rand -hex 32)"
+   ```
+
+   Add `--from-literal=ALLOWED_TELEGRAM_USER_IDS=<id>,<id>` to keep the bot private. To keep
+   wallets from a local run, reuse its `WALLET_ENCRYPTION_KEY` and copy `data/wallets.json`
+   into the volume; the store does not open under a different key.
+3. Stop any local copy before the first rollout; two pollers on one token conflict.

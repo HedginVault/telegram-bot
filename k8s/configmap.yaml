@@ -1,0 +1,7 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telegram-bot-config
+data:
+  HEDGE_API_BASE_URL: "https://hedgin.xyz"
+  WALLET_STORE_PATH: "/data/wallets.json"

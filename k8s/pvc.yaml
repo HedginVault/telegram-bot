@@ -1,0 +1,11 @@
+# Holds the encrypted wallet store. Deleting this claim deletes every wallet the bot generated.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: telegram-bot-data
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
