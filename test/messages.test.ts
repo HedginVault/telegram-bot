@@ -349,6 +349,36 @@ describe("messages", () => {
     }
   });
 
+  it("lists each transaction once at its latest state", () => {
+    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC" };
+    const html = executionMessage(action, [
+      { kind: "building", action: "dlmm/zap-out" },
+      { kind: "sent", signature: "sigA", status: "pending" },
+      { kind: "sent", signature: "sigB", status: "pending" },
+      { kind: "sent", signature: "sigC", status: "unknown" },
+      { kind: "confirmed", signature: "sigA" },
+    ]);
+    const tx = (signature: string, n: number) => `<a href="https://solscan.io/tx/${signature}">#${n}</a>`;
+    expect(html.split("\n").slice(2, 6)).toEqual([
+      "🛠 <code>dlmm/zap-out</code>",
+      `✅ Confirmed ${tx("sigA", 1)}`,
+      `📤 Sent ${tx("sigB", 2)}`,
+      `❓ Checking ${tx("sigC", 3)}`,
+    ]);
+    expect(() => assertTelegramHtml(html)).not.toThrow();
+  });
+
+  it("collapses a successful action to a single done line", () => {
+    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC" };
+    const progress = [
+      { kind: "building", action: "dlmm/zap-out" },
+      { kind: "sent", signature: "sigA", status: "pending" },
+      { kind: "confirmed", signature: "sigA" },
+    ] as const;
+    const html = executionMessage(action, [...progress], { kind: "confirmed", signatures: ["sigA", "sigB"] });
+    expect(html).toBe("✅ <b>Zap out the SOL/USDC position to USDC</b>\n\n<b>Done.</b> 2 confirmed.");
+  });
+
   it("trims long messages at a line break so tags stay closed", () => {
     const html = Array.from({ length: 400 }, (_, i) => `<b>row ${i}</b> some text`).join("\n");
     const fitted = fitMessage(html);

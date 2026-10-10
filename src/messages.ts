@@ -722,28 +722,34 @@ export function confirmMessage(vault: VaultSummary | undefined, action: PendingA
   ].join("\n");
 }
 
-function progressLine(progress: Progress): string {
-  switch (progress.kind) {
-    case "building":
-      return `🛠 Building <code>${escapeHtml(progress.action)}</code>`;
-    case "sent":
-      return `📤 Sent ${txLink(progress.signature)}${progress.status === "unknown" ? " <i>(outcome unknown, checking)</i>" : ""}`;
-    case "confirmed":
-      return `✅ Confirmed ${txLink(progress.signature)}`;
+type TxState = "pending" | "unknown" | "confirmed";
+const TX_STATE_LABEL: Record<TxState, string> = { confirmed: "✅ Confirmed", pending: "📤 Sent", unknown: "❓ Checking" };
+
+/** Each transaction once, at its latest state, as a numbered Solscan link. */
+function progressLines(progress: Progress[]): string[] {
+  const actions = new Set<string>();
+  const states = new Map<string, TxState>();
+  for (const step of progress) {
+    if (step.kind === "building") actions.add(step.action);
+    else states.set(step.signature, step.kind === "confirmed" ? "confirmed" : step.status);
   }
+  const links: Record<TxState, string[]> = { confirmed: [], pending: [], unknown: [] };
+  [...states].forEach(([signature, state], index) =>
+    links[state].push(`<a href="https://solscan.io/tx/${encodeURIComponent(signature)}">#${index + 1}</a>`),
+  );
+  return [
+    ...[...actions].map((action) => `🛠 <code>${escapeHtml(action)}</code>`),
+    ...(["confirmed", "pending", "unknown"] as const).filter((state) => links[state].length > 0).map((state) => `${TX_STATE_LABEL[state]} ${links[state].join(" ")}`),
+  ];
 }
 
 /** Live view while an action runs; `outcome` appears once it ends. */
 export function executionMessage(action: PendingAction, progress: Progress[], outcome?: Outcome, scope?: string): string {
-  const lines = [`${outcome ? outcomeIcon(outcome) : "⏳"} <b>${actionTitle(action)}</b>`, "", ...progress.map(progressLine)];
-  if (!outcome) return [...lines, "", "<i>Working… keep this chat open.</i>"].join("\n");
-  lines.push("");
+  const lines = [`${outcome ? outcomeIcon(outcome) : "⏳"} <b>${actionTitle(action)}</b>`, ""];
+  if (outcome?.kind === "confirmed") return [...lines, ...confirmedLines(outcome)].join("\n");
+  lines.push(...progressLines(progress), "");
+  if (!outcome) return [...lines, "<i>Working… keep this chat open.</i>"].join("\n");
   switch (outcome.kind) {
-    case "confirmed":
-      lines.push(`<b>Done.</b> ${outcome.signatures.length} transaction(s) confirmed.`);
-      if (outcome.created?.vault) lines.push(`New vault ${address(outcome.created.vault)}`);
-      if (outcome.created?.position) lines.push(`New position ${address(outcome.created.position)}`);
-      break;
     case "refused":
       lines.push("<b>Not signed.</b> The bot refused a transaction from the API:", `<i>${escapeHtml(outcome.reason)}</i>`);
       break;
@@ -766,6 +772,13 @@ export function executionMessage(action: PendingAction, progress: Progress[], ou
   }
   return lines.join("\n");
 }
+
+/** Success hides the per-transaction steps; failures keep them so the operator can check what landed. */
+const confirmedLines = (outcome: Extract<Outcome, { kind: "confirmed" }>) => [
+  `<b>Done.</b> ${outcome.signatures.length} confirmed.`,
+  ...(outcome.created?.vault ? [`New vault ${address(outcome.created.vault)}`] : []),
+  ...(outcome.created?.position ? [`New position ${address(outcome.created.position)}`] : []),
+];
 
 const outcomeIcon = (outcome: Outcome) => ({ confirmed: "✅", refused: "🛑", failed: "❌", unresolved: "❓" })[outcome.kind];
 

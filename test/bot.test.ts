@@ -329,7 +329,7 @@ describe("swap form", () => {
     await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: USDC, destinationMint: MINT, amount: "500000", slippageBps: 300 });
-    expect(lastScreen().text).toContain("<b>Done.</b> 1 transaction(s) confirmed.");
+    expect(lastScreen().text).toContain("<b>Done.</b> 1 confirmed.");
   });
 
   it("keeps asking after bad input and stops on /cancel", async () => {
@@ -958,7 +958,7 @@ describe("phoenix", () => {
     expect(ui.lastScreen().text).toContain("<b>Onboard the vault's Phoenix trader</b>");
     await confirm(ui);
     expect(onboardPhoenix).toHaveBeenCalledWith(VAULT, expect.objectContaining({ publicKey: manager.publicKey }), expect.anything());
-    expect(ui.lastScreen().text).toContain("<b>Done.</b> 1 transaction(s) confirmed.");
+    expect(ui.lastScreen().text).toContain("<b>Done.</b> 1 confirmed.");
   });
 
   it("explains an already onboarded trader", async () => {
