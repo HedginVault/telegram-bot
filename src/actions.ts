@@ -26,6 +26,22 @@ export interface SideBins {
   priceRange: { low: string; high: string };
 }
 
+/** Any inclusive bin range of a position, with what a remove there takes, for display. */
+export interface RangeBins {
+  /** What the manager picked, e.g. "top 25% of bins" or "custom range". */
+  label: string;
+  lowerBinId: number;
+  upperBinId: number;
+  priceRange: { low: string; high: string };
+  /** A typed range was cut to the position's bins. */
+  clipped: boolean;
+  tokenX: TokenRef;
+  tokenY: TokenRef;
+  /** Display only: summed per-bin amounts in these bins at the remove's share, each bin floored. */
+  amountXBaseUnits: string;
+  amountYBaseUnits: string;
+}
+
 /** One side's bins of a position and the token they hold, as the remove picker and flip use them. */
 export interface SideLiquidity {
   bins: SideBins;
@@ -55,7 +71,7 @@ export type PendingAction =
     }
   | { kind: "dlmmClaim"; vault: string; position: string; pairLabel: string }
   /** Without `bins`, removes from every bin. */
-  | { kind: "dlmmRemove"; vault: string; position: string; pairLabel: string; bps: RemoveBps; bins?: SideBins }
+  | { kind: "dlmmRemove"; vault: string; position: string; pairLabel: string; bps: RemoveBps; bins?: SideBins | RangeBins }
   | {
       kind: "dlmmFlip";
       vault: string;

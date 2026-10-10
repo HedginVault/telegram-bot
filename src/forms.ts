@@ -1,9 +1,11 @@
 import {
   type DlmmShape,
   type HedgeClient,
+  type InclusiveBinRange,
   type PoolInfo,
   type PriceRange,
   type VaultDetail,
+  binPrice,
   binRangeForPrices,
   formatUnits,
   parseUnits,
@@ -173,7 +175,20 @@ export interface TrackForm {
   token?: PickedToken;
 }
 
-export type Form = SwapForm | LpForm | PhoenixTransferForm | OrderForm | VaultForm | TrackForm;
+/** Collects a typed price range to remove from; the screens render it, not `renderForm`. */
+export interface RemoveRangeForm {
+  kind: "removeRange";
+  /** The position's entry in the screens' position store. */
+  refId: string;
+  /** The position's bins, pool pricing, and per-bin amounts when the form opened; typed prices convert against these. */
+  position: InclusiveBinRange;
+  pricing: BinPricing;
+  bins: BinAmounts[];
+  /** Set once the manager types a usable range. */
+  range?: ClippedRange;
+}
+
+export type Form = SwapForm | LpForm | PhoenixTransferForm | OrderForm | VaultForm | TrackForm | RemoveRangeForm;
 
 
 /** A value the user typed that cannot be used; the message is shown as-is. */
@@ -276,6 +291,83 @@ export function parsePrice(text: string): number {
   const price = Number(text.trim().replace(/,/g, ""));
   if (!Number.isFinite(price) || price <= 0) throw new InputError('Send a positive price like "142.5".');
   return price;
+}
+
+export type BinPricing = Pick<PoolInfo, "activeBinId" | "activePrice" | "binStep">;
+export interface BinAmounts {
+  binId: number;
+  amountX: string;
+  amountY: string;
+}
+export interface ClippedRange extends InclusiveBinRange {
+  clipped: boolean;
+}
+
+/** Remove quick picks: a share of the position's width from its highest-price (top) or lowest-price (bottom) end. */
+export const QUICK_PICKS = [
+  { bins: "top25", end: "top", pct: 25, label: "top 25% of bins", button: "⏫ Top 25% of bins" },
+  { bins: "top50", end: "top", pct: 50, label: "top 50% of bins", button: "⏫ Top 50% of bins" },
+  { bins: "bottom25", end: "bottom", pct: 25, label: "bottom 25% of bins", button: "⏬ Bottom 25% of bins" },
+  { bins: "bottom50", end: "bottom", pct: 50, label: "bottom 50% of bins", button: "⏬ Bottom 50% of bins" },
+] as const;
+export type QuickPick = (typeof QUICK_PICKS)[number];
+
+/** ceil(width × pct) bins, at least 1, from one end of the position, regardless of the active bin. */
+export function quickPickRange(position: InclusiveBinRange, end: QuickPick["end"], pct: number): InclusiveBinRange {
+  const width = position.upperBinId - position.lowerBinId + 1;
+  const count = Math.max(1, Math.ceil((width * pct) / 100));
+  return end === "top"
+    ? { lowerBinId: position.upperBinId - count + 1, upperBinId: position.upperBinId }
+    : { lowerBinId: position.lowerBinId, upperBinId: position.lowerBinId + count - 1 };
+}
+
+/** Per-bin amounts in `range` at `bps`, each bin floored, like the app's `amountsInSelection`. */
+export function amountsInRange(bins: readonly BinAmounts[], range: InclusiveBinRange, bps: number): { amountX: bigint; amountY: bigint } {
+  let amountX = 0n;
+  let amountY = 0n;
+  for (const b of bins) {
+    if (b.binId < range.lowerBinId || b.binId > range.upperBinId) continue;
+    amountX += (BigInt(b.amountX) * BigInt(bps)) / 10_000n;
+    amountY += (BigInt(b.amountY) * BigInt(bps)) / 10_000n;
+  }
+  return { amountX, amountY };
+}
+
+const PRICE_PAIR = /^(\d+(?:\.\d+)?|\.\d+)(?:\s*,\s*|\s*-\s*|\s+)(\d+(?:\.\d+)?|\.\d+)$/;
+
+/** "106.5 108.2", "106.5, 108.2", or "106.5-108.2" → min and max price. */
+export function parsePriceRange(text: string): { min: number; max: number } {
+  const match = PRICE_PAIR.exec(text.trim());
+  if (!match) throw new InputError('Send a min and a max price, like "106.5 108.2", "106.5, 108.2", or "106.5-108.2".');
+  const min = Number(match[1]);
+  const max = Number(match[2]);
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min <= 0 || max <= 0) throw new InputError("Both prices must be positive numbers.");
+  if (min >= max) throw new InputError("The min price must be below the max price.");
+  return { min, max };
+}
+
+/** Bin holding `price`, rounded like the app's `priceToBinId`, measured from the active bin. */
+function priceToBinId(pricing: BinPricing, price: number, round: "floor" | "ceil"): number {
+  const raw = Math.log(price / Number(pricing.activePrice)) / Math.log(1 + pricing.binStep / 10_000);
+  // Snap float noise so an exact bin price maps to its own bin under both roundings.
+  const snapped = Math.abs(raw - Math.round(raw)) < 1e-9 ? Math.round(raw) : raw;
+  return pricing.activeBinId + Math[round](snapped);
+}
+
+/**
+ * Bins a typed price range covers (min → floor bin, max → ceil bin), clipped to the position.
+ * Not the SDK's `binRangeForPrices`: its 1,400-bin cap would reject wide ranges before clipping.
+ */
+export function priceRangeToBins(pricing: BinPricing, position: InclusiveBinRange, min: number, max: number): ClippedRange {
+  if (!(Number(pricing.activePrice) > 0)) throw new InputError("The pool has no usable price right now.");
+  const lowerBinId = priceToBinId(pricing, min, "floor");
+  const upperBinId = priceToBinId(pricing, max, "ceil");
+  const clipped = { lowerBinId: Math.max(lowerBinId, position.lowerBinId), upperBinId: Math.min(upperBinId, position.upperBinId) };
+  if (clipped.lowerBinId > clipped.upperBinId) {
+    const covers = `${formatPrice(binPrice(pricing, position.lowerBinId))} → ${formatPrice(binPrice(pricing, position.upperBinId))}`;
+    throw new InputError(`That range is outside this position, which covers ${covers}.`);
+  }
+  return { ...clipped, clipped: clipped.lowerBinId !== lowerBinId || clipped.upperBinId !== upperBinId };
 }
 
 export const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
@@ -442,6 +534,7 @@ const PROMPTS: Record<TextField, string> = {
   depositCap: 'Send the most the vault may hold, in deposit tokens, e.g. "100000". Send "none" for no cap.',
   minDeposit: 'Send the smallest deposit allowed, in deposit tokens, e.g. "10".',
   minWithdrawalShares: 'Send the fewest shares a withdrawal may redeem, e.g. "1".',
+  removeRange: '✏️ Send the min and max price to remove from, in the pool\'s quote token per base token, e.g. "106.5 108.2".',
 };
 
 function getForm(deps: FormDeps, formId: string): Form {
@@ -454,6 +547,7 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
   const form = getForm(deps, formId);
   const show: FormResult = { kind: "show", screen: { kind: "form", formId } };
   if (op.op === "ask") return { kind: "ask", field: op.field, prompt: PROMPTS[op.field] };
+  if (form.kind === "removeRange") throw expired();
   const review = async (action: Promise<PendingAction>): Promise<FormResult> => ({ kind: "show", screen: { kind: "confirm", actionId: deps.actions.put(await action) } });
   if (form.kind === "phoenixTransfer") {
     if (op.op === "share") {
@@ -596,6 +690,15 @@ async function pasteMint(api: HedgeClient, lookupVault: string, text: string): P
 
 export async function applyFormText(formId: string, field: TextField, text: string, deps: FormDeps): Promise<void> {
   const form = getForm(deps, formId);
+  if (form.kind === "removeRange") {
+    if (field !== "removeRange") throw expired();
+    const { min, max } = parsePriceRange(text);
+    const range = priceRangeToBins(form.pricing, form.position, min, max);
+    const held = amountsInRange(form.bins, range, 10_000);
+    if (held.amountX === 0n && held.amountY === 0n) throw new InputError("The position holds no liquidity in that range.");
+    form.range = range;
+    return;
+  }
   if (form.kind === "phoenixTransfer") {
     if (field !== "amount") throw expired();
     form.amount = parseAmountInput(text, form.usdc.decimals);
@@ -848,6 +951,8 @@ export async function renderForm(formId: string, deps: FormDeps): Promise<Render
       return renderVaultForm(formId, form);
     case "track":
       return renderTrackForm(formId, form);
+    case "removeRange":
+      throw new Error("a remove range is rendered by the screens");
   }
 }
 

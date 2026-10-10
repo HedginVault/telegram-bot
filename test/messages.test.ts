@@ -28,6 +28,7 @@ import {
   positionMessage,
   removeAmountMessage,
   removePickMessage,
+  removeRangeAmountMessage,
 } from "../src/messages";
 import type { LpForm, OrderForm, SwapForm, VaultForm } from "../src/forms";
 import { VAULT, holdings, navHistory, phoenixNone, phoenixReady, phoenixRegistered, quote, requestQueue, strategies, strategyHistory, vaultDetail, vaultSummary } from "./fixtures";
@@ -76,6 +77,17 @@ const hostileDlmm: Strategy = {
 };
 const hostileBins = { side: "above" as const, lowerBinId: 1, upperBinId: 4, priceRange: { low: HOSTILE, high: HOSTILE } };
 const hostileSide = { bins: hostileBins, token: hostileToken, activeBinId: 0, amountBaseUnits: "5", amountIsSideTotal: false };
+const hostileRange = {
+  label: HOSTILE,
+  lowerBinId: 1,
+  upperBinId: 4,
+  priceRange: { low: HOSTILE, high: HOSTILE },
+  clipped: true,
+  tokenX: hostileToken,
+  tokenY: hostileToken,
+  amountXBaseUnits: "5",
+  amountYBaseUnits: "6",
+};
 const hostileLiquidity = { tokenX: hostileToken, tokenY: hostileToken, amountX: "1", amountY: "2", shape: "curve" as const };
 const hostileDetail = { ...vaultDetail, name: HOSTILE, depositSymbol: HOSTILE, pendingPerformanceFeeBps: 1, feeEffectiveTs: 1 };
 const hostilePhoenix = {
@@ -105,6 +117,8 @@ const hostileActions: PendingAction[] = [
   { kind: "dlmmAdd", vault: VAULT, position: "P", pairLabel: HOSTILE, liquidity: hostileLiquidity },
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 10_000 },
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 5000, bins: hostileBins },
+  { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 2500, bins: hostileRange },
+  { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 2500, bins: { ...hostileRange, clipped: false } },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide, amountIsSideTotal: true },
   { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE },
@@ -323,6 +337,9 @@ describe("messages", () => {
       hostileDlmm.type === "dlmm" ? removePickMessage({ ...hostileDlmm, lowerBinId: 0, upperBinId: 5, activeBinId: 2 }, null, { ...hostileSide, amountIsSideTotal: true }) : "",
       hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, hostileSide) : "",
       hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, null) : "",
+      hostileDlmm.type === "dlmm" ? removePickMessage(hostileDlmm, null, null, [{ button: HOSTILE, bins: hostileRange }], true) : "",
+      hostileDlmm.type === "dlmm" ? removeRangeAmountMessage(hostileDlmm, hostileRange) : "",
+      hostileDlmm.type === "dlmm" ? removeRangeAmountMessage(hostileDlmm, { ...hostileRange, clipped: false }) : "",
       errorMessage(HOSTILE, HOSTILE),
       swapFormMessage(hostileSwap, "5"),
       swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),

@@ -38,9 +38,12 @@ export type FormOp =
   | { op: "reduceOnly" }
   | { op: "usdc" };
 
-/** Which bins of a position a remove takes: all, or only those strictly above or below the price. */
+/**
+ * Which bins of a position a remove takes: all, only those strictly above or below the price, or a
+ * quick pick of the position's highest- or lowest-price bins.
+ */
 // Append only: callback data carries the index.
-export const REMOVE_BINS = ["all", "above", "below"] as const;
+export const REMOVE_BINS = ["all", "above", "below", "top25", "top50", "bottom25", "bottom50"] as const;
 export type RemoveBins = (typeof REMOVE_BINS)[number];
 
 // Append only: callback data carries a field's index.
@@ -63,6 +66,7 @@ const TEXT_FIELDS = [
   "depositCap",
   "minDeposit",
   "minWithdrawalShares",
+  "removeRange",
 ] as const;
 export type TextField = (typeof TEXT_FIELDS)[number];
 
@@ -305,7 +309,7 @@ export function decodeScreen(data: string): Screen | undefined {
     if (kind === "form" || kind === "swapQuote") return { kind, formId: id };
     return { kind, actionId: id };
   }
-  const removeBins = new RegExp(`^rb([0-2]):(${STORE_ID})$`).exec(data);
+  const removeBins = new RegExp(`^rb([0-6]):(${STORE_ID})$`).exec(data);
   const bins = removeBins && REMOVE_BINS[Number(removeBins[1])];
   if (removeBins && bins) return { kind: "removeBins", refId: removeBins[2] as string, bins };
   const formOp = new RegExp(`^o:(${STORE_ID}):(\\w{2,10})$`).exec(data);

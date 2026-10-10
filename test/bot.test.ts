@@ -487,6 +487,122 @@ describe("trading", () => {
     expect(lastScreen().text).toContain("Range 150.15 → 151.5068");
   });
 
+  it.each([
+    ["⏫ Top 25% of bins", { lowerBinId: -95, upperBinId: -90 }],
+    ["⏫ Top 50% of bins", { lowerBinId: -100, upperBinId: -90 }],
+    ["⏬ Bottom 25% of bins", { lowerBinId: -110, upperBinId: -105 }],
+    ["⏬ Bottom 50% of bins", { lowerBinId: -110, upperBinId: -100 }],
+  ])("removes 25%% of %s over the whole position width", async (preset, range) => {
+    const [, dlmm] = strategies;
+    // Liquidity at both edges, so every quick pick holds some.
+    const edges =
+      dlmm?.type === "dlmm"
+        ? { ...dlmm, bins: [{ binId: -110, amountX: "0", amountY: "10000000" }, ...(dlmm.bins ?? []), { binId: -90, amountX: "300000000", amountY: "0" }] }
+        : dlmm;
+    const { send, click, api, settle, lastScreen } = setup({ ...tradingApi(), getStrategies: vi.fn(async () => (edges ? [edges] : [])) });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click(preset);
+    await click("➖ 25%");
+    expect(lastScreen().text).toContain(`(${preset.slice(2).toLowerCase()})`);
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/remove", { vault: VAULT, position: POSITION, bpsToRemove: 2500, ...range });
+  });
+
+  it("shows a quick pick's prices, bins, and token amounts", async () => {
+    const { send, click, lastScreen } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    expect(lastScreen().text).toContain("⏫ Top 50% of bins · 150 → 151.5068 · 11 bins · ≈ 0.5 SOL + 25 USDC");
+    await click("⏫ Top 50% of bins");
+    expect(lastScreen().text).toContain("· top 50% of bins\n├ Range 150 → 151.5068\n├ Bins 11\n└ Holds ≈ 0.5 SOL + 25 USDC");
+    await click("➖ 50%");
+    const review = lastScreen().text;
+    expect(review).toContain("Remove 50% of the SOL/USDC position (top 50% of bins)");
+    expect(review).toContain("Bins <b>top 50% of bins</b> · 11");
+    expect(review).toContain("Range 150 → 151.5068");
+    // Floored per bin: 50% of 100000000 + 200000000 + 200000000 SOL base units, 50% of 25000000 USDC.
+    expect(review).toContain("Removes ≈ 0.25 SOL + 12.5 USDC");
+  });
+
+  it("removes a typed price range, converting prices to bins", async () => {
+    const { send, click, type, api, settle, lastScreen, replies } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click("✏️ Custom range");
+    expect(replies.at(-1)).toContain('Send the min and max price to remove from');
+    await type("149.5 150.5");
+    expect(lastScreen().text).toContain("· custom range\n├ Range 149.4015 → 150.6009\n├ Bins 9\n└ Holds ≈ 0.5 SOL + 75 USDC");
+    expect(lastScreen().text).not.toContain("clipped");
+    await click("➖ 50%");
+    expect(lastScreen().text).toContain("Removes ≈ 0.25 SOL + 37.5 USDC");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/remove", { vault: VAULT, position: POSITION, bpsToRemove: 5000, lowerBinId: -104, upperBinId: -96 });
+  });
+
+  it("clips a typed range to the position and says so", async () => {
+    const { send, click, type, api, settle, lastScreen } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click("✏️ Custom range");
+    await type("140, 150");
+    expect(lastScreen().text).toContain("Your range was clipped to the position's bins.");
+    await click("➖ 100%");
+    expect(lastScreen().text).toContain("Your range was clipped to the position's bins.");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/remove", { vault: VAULT, position: POSITION, bpsToRemove: 10_000, lowerBinId: -110, upperBinId: -100 });
+  });
+
+  it("explains a bad typed range and takes a retry", async () => {
+    const { send, click, type, api, settle, replies } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click("✏️ Custom range");
+    await type("lots");
+    expect(replies.at(-1)).toBe('Send a min and a max price, like "106.5 108.2", "106.5, 108.2", or "106.5-108.2".\nTry again, or send /cancel.');
+    await type("150.5 149.5");
+    expect(replies.at(-1)).toBe("The min price must be below the max price.\nTry again, or send /cancel.");
+    await type("200 300");
+    expect(replies.at(-1)).toBe("That range is outside this position, which covers 148.5082 → 151.5068.\nTry again, or send /cancel.");
+    await type("148.6 149");
+    expect(replies.at(-1)).toBe("The position holds no liquidity in that range.\nTry again, or send /cancel.");
+    await type("149.5-150.5");
+    await click("➖ 25%");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/remove", { vault: VAULT, position: POSITION, bpsToRemove: 2500, lowerBinId: -104, upperBinId: -96 });
+  });
+
+  it("goes back to the bin picker when a typed range is cancelled", async () => {
+    const { send, click, buttons } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click("✏️ Custom range");
+    await click("✖️ Cancel");
+    expect(buttons().map((b) => b.text)).toContain("✏️ Custom range");
+  });
+
   it("hides a side with no liquidity and explains it", async () => {
     const [, dlmm] = strategies;
     const noX = dlmm?.type === "dlmm" ? { ...dlmm, bins: dlmm.bins?.map((b) => ({ ...b, amountX: b.binId > -100 ? "0" : b.amountX })) } : dlmm;
@@ -497,7 +613,8 @@ describe("trading", () => {
     await click("⚙️ SOL/USDC position");
     expect(buttons().map((b) => b.text)).not.toContain("🔁 Flip SOL to Bid-Ask");
     await click("➖ Remove liquidity");
-    expect(buttons().map((b) => b.text)).toEqual(["🧺 All bins", "⬇️ Below price only · USDC", "⬅️ Position"]);
+    // The fixture's bins sit mid-position, so the 25% picks at either end hold nothing and are hidden.
+    expect(buttons().map((b) => b.text)).toEqual(["🧺 All bins", "⬇️ Below price only · USDC", "⏫ Top 50% of bins", "⏬ Bottom 50% of bins", "✏️ Custom range", "⬅️ Position"]);
     expect(lastScreen().text).toContain("⬆️ Above price · <i>no SOL there</i>");
   });
 
