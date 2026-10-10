@@ -28,6 +28,7 @@ import {
   describeAmount,
   formatPrice,
   needsWarning,
+  type PickedToken,
   rangePresetLabel,
   shapeLabel,
   vaultChanges,
@@ -170,7 +171,7 @@ export const HELP_MESSAGE = [
   "",
   "Add your manager wallet under 👛 <b>Wallet</b> (import its private key, or create a new one), add the API key an admin issued for it, then tap <b>Vaults</b>.",
   "",
-  "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, then set the amount (\"1.5\", \"25%\", \"max\") and slippage.",
+  "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, then tap 🟢 Buy or 🔴 Sell with a share, or ✏️ to type an amount (\"1.5\", \"25%\", \"max\").",
   "<b>LP</b> · Vault → ➕ New LP. Paste a pool or search by symbol, pick a side, shape, and range, and size each token.",
   "",
   "<b>Commands</b>",
@@ -878,14 +879,35 @@ const outcomeIcon = (outcome: Outcome) => ({ confirmed: "✅", refused: "🛑", 
 const tokenLabel = (token: TokenRef & { pasted?: boolean; verified?: boolean | null }) =>
   `<b>${escapeHtml(token.symbol)}</b>${"pasted" in token && token.pasted ? ` ${address(token.mint)}` : ""}`;
 
-export function swapFormMessage(form: SwapForm, inputBalanceBaseUnits: string | undefined): string {
-  const lines = [`💱 <b>Swap</b> · ${form.side === "buy" ? "buy with" : "sell for"} ${escapeHtml(form.deposit.symbol)}`, ""];
-  lines.push(`Token ${form.token ? tokenLabel(form.token) : "<i>not set: pick one or paste a contract address</i>"}`);
-  if (form.token && needsWarning(form.token)) lines.push(`⚠️ <i>${form.token.verified === false ? "Not verified by Jupiter." : "Verification unavailable."} Double-check the address.</i>`);
-  const input = form.token ? (form.side === "buy" ? form.deposit : form.token) : undefined;
-  lines.push(`Amount ${escapeHtml(describeAmount(form.amount, input, (base, decimals) => amount(base, decimals, "").trim()))}`);
-  if (input && inputBalanceBaseUnits !== undefined) lines.push(`Vault ${escapeHtml(input.symbol)} ${amount(inputBalanceBaseUnits, input.decimals, input.symbol)}`);
-  lines.push(`Slippage ${form.slippageBps / 100}%`);
+export function swapPickerMessage(form: SwapForm, balancesBaseUnits: string[]): string {
+  const lines = [`💱 <b>Swap</b> · pick a token to buy or sell for ${escapeHtml(form.deposit.symbol)}`, ""];
+  if (form.held.length > 0) {
+    lines.push("<b>In the vault</b>");
+    form.held.forEach((token, index) => {
+      const balance = balancesBaseUnits[index] ?? "0";
+      // Held only inside LP or Phoenix positions: the vault can buy more but has none free to sell.
+      lines.push(balance === "0" ? `${escapeHtml(token.symbol)} · <i>none free to sell</i>` : amount(balance, token.decimals, token.symbol));
+    });
+    lines.push("");
+  }
+  lines.push("<i>Or paste any token's contract address.</i>");
+  return lines.join("\n");
+}
+
+export function swapCardMessage(deposit: TokenRef, token: PickedToken, tokenBalanceBaseUnits: string, depositBalanceBaseUnits: string, slippageBps: number): string {
+  const lines = [`💱 ${tokenLabel(token)}`];
+  if (needsWarning(token)) lines.push(`⚠️ <i>${token.verified === false ? "Not verified by Jupiter." : "Verification unavailable."} Double-check the address.</i>`);
+  lines.push(
+    "",
+    `Vault holds <b>${amount(tokenBalanceBaseUnits, token.decimals, token.symbol)}</b>`,
+    `Vault has <b>${amount(depositBalanceBaseUnits, deposit.decimals, deposit.symbol)}</b> to buy with`,
+    "",
+  );
+  if (depositBalanceBaseUnits === "0") lines.push(`<i>No ${escapeHtml(deposit.symbol)} to buy with.</i>`);
+  else lines.push(`<i>🟢 Buy % spends that share of the vault's ${escapeHtml(deposit.symbol)}.</i>`);
+  if (tokenBalanceBaseUnits === "0") lines.push(`<i>Nothing to sell: the vault holds no ${escapeHtml(token.symbol)}.</i>`);
+  else lines.push(`<i>🔴 Sell % sells that share of its ${escapeHtml(token.symbol)}.</i>`);
+  lines.push(`Slippage ${slippageBps / 100}%`);
   return lines.join("\n");
 }
 

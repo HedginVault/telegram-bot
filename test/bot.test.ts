@@ -291,38 +291,69 @@ describe("buttons", () => {
 describe("swap form", () => {
   afterEach(() => vi.restoreAllMocks());
 
-  it("quotes a held token with a typed amount and custom slippage", async () => {
-    const { send, click, fill, buttons, lastScreen, api } = setup();
+  it("picks a held token from the picker, then quotes one-tap sells and buys", async () => {
+    const { send, click, buttons, lastScreen, api } = setup();
     await send("/start");
     await click("1. Demo");
     await click("💱 Swap");
-    expect(lastScreen().text).toContain("💱 <b>Swap</b> · buy with USDC");
-    await click("🟢 Buying · tap to sell");
+    expect(lastScreen().text).toContain("💱 <b>Swap</b> · pick a token to buy or sell for USDC\n\n<b>In the vault</b>\n0.01 SOL");
+    expect(buttons().map((b) => b.text)).toEqual(["SOL", "📋 Paste CA", "⬅️ Vault"]);
     await click("SOL");
-    await fill("✏️ Amount", "0.004");
+    expect(lastScreen().text).toContain("Vault holds <b>0.01 SOL</b>\nVault has <b>1 USDC</b> to buy with");
+    expect(buttons().map((b) => b.text)).toEqual([
+      "🟢 Buy 25%",
+      "🟢 Buy 50%",
+      "🟢 Buy ✏️",
+      "🔴 Sell 50%",
+      "🔴 Sell all",
+      "🔴 Sell ✏️",
+      "Slip 0.5%",
+      "Slip 1%",
+      "Slip 3%",
+      "✏️ Slippage",
+      "🔄 Other token",
+      "⬅️ Vault",
+    ]);
+    await click("🔴 Sell all");
+    expect(api.getQuote).toHaveBeenLastCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amount: "10000000", slippageBps: 50 });
+    expect(lastScreen().text).toMatch(/^💱 <b>SOL → USDC<\/b>/);
+    expect(buttons().map((b) => b.text)).toEqual(["⚡ Swap SOL → USDC", "🔄 Refresh", "⬅️ Back"]);
+    await click("⬅️ Back");
+    await click("🟢 Buy 25%");
+    expect(api.getQuote).toHaveBeenLastCalledWith({ vault: VAULT, inputMint: USDC, outputMint: SOL, amount: "250000", slippageBps: 50 });
+    expect(lastScreen().text).toMatch(/^💱 <b>USDC → SOL<\/b>/);
+    await click("⬅️ Back");
+    await click("🔄 Other token");
+    expect(lastScreen().text).toContain("pick a token to buy or sell");
+  });
+
+  it("quotes a typed sell amount with custom slippage straight away", async () => {
+    const { send, click, fill, lastScreen, api } = setup();
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Swap");
+    await click("SOL");
     await fill("✏️ Slippage", "0.8");
-    expect(lastScreen().text).toContain("Amount 0.004 SOL");
     expect(lastScreen().text).toContain("Slippage 0.8%");
-    await click("📈 Quote & review");
+    await fill("🔴 Sell ✏️", "0.004");
     expect(api.getQuote).toHaveBeenLastCalledWith({ vault: VAULT, inputMint: SOL, outputMint: USDC, amount: "4000000", slippageBps: 80 });
     expect(lastScreen().text).toMatch(/^💱 <b>SOL → USDC<\/b>/);
-    expect(buttons().map((b) => b.text)).toEqual(["⚡ Swap SOL → USDC", "🔄 Refresh", "✏️ Edit"]);
   });
 
   it("swaps a pasted contract address after warning that it is unverified", async () => {
     const MINT = "PastedMint111111111111111111111111111111111";
-    const { send, click, fill, lastScreen, api, settle } = setup(tradingApi());
+    const { send, click, fill, buttons, lastScreen, api, settle } = setup(tradingApi());
     await send("/start");
     await click("1. Demo");
     await click("💱 Swap");
     await fill("📋 Paste CA", MINT);
     expect(api.getToken).toHaveBeenCalledWith(VAULT, MINT);
-    expect(lastScreen().text).toContain(`Token <b>PASTED</b> <code>${MINT}</code>`);
+    expect(lastScreen().text).toContain(`💱 <b>PASTED</b> <code>${MINT}</code>`);
     expect(lastScreen().text).toContain("⚠️ <i>Not verified by Jupiter. Double-check the address.</i>");
-    await fill("✏️ Amount", "0.5");
-    await click("✓ 0.5%");
-    await click("3%");
-    await click("📈 Quote & review");
+    expect(lastScreen().text).toContain("<i>Nothing to sell: the vault holds no PASTED.</i>");
+    expect(buttons().map((b) => b.text)).not.toContain("🔴 Sell ✏️");
+    await click("Slip 3%");
+    await fill("🟢 Buy ✏️", "0.5");
     await click("⚡ Swap USDC → PASTED");
     expect(lastScreen().text).toContain("<b>Swap 0.5 USDC → PASTED</b>");
     expect(lastScreen().text).toContain("Jupiter has not verified this token");
@@ -348,15 +379,14 @@ describe("swap form", () => {
     expect(lastScreen().text).toBe("Send /start for the menu.");
   });
 
-  it("refuses an exact amount larger than the vault holds at quote time", async () => {
-    const { send, click, fill, alerts, api } = setup();
+  it("re-asks for a typed amount larger than the vault holds without quoting", async () => {
+    const { send, click, fill, replies, api } = setup();
     await send("/start");
     await click("1. Demo");
     await click("💱 Swap");
     await click("SOL");
-    await fill("✏️ Amount", "5");
-    await click("📈 Quote & review");
-    expect(alerts()).toContain("That is more than the vault holds.");
+    await fill("🔴 Sell ✏️", "5");
+    expect(replies.at(-1)).toBe("That is more than the vault holds.\nTry again, or send /cancel.");
     expect(api.getQuote).not.toHaveBeenCalled();
   });
 
@@ -394,10 +424,8 @@ async function openSwapQuote(ui: ReturnType<typeof setup>) {
   await ui.send("/start");
   await ui.click("1. Demo");
   await ui.click("💱 Swap");
-  await ui.click("🟢 Buying · tap to sell");
   await ui.click("SOL");
-  await ui.click("25%");
-  await ui.click("📈 Quote & review");
+  await ui.click("🔴 Sell 50%");
 }
 
 describe("trading", () => {
@@ -412,7 +440,7 @@ describe("trading", () => {
     await ui.settle();
     await ui.tap(confirm);
     expect(ui.api.build).toHaveBeenCalledTimes(1);
-    expect(ui.api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: SOL, destinationMint: USDC, amount: "2500000", slippageBps: 50 });
+    expect(ui.api.build).toHaveBeenCalledWith("jupiter/swap", { vault: VAULT, sourceMint: SOL, destinationMint: USDC, amount: "5000000", slippageBps: 50 });
     expect(ui.replies.at(-1)).toBe("❌ This confirmation was already used or has expired. Start again from /start.");
   });
 

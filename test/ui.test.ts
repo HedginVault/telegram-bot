@@ -10,7 +10,6 @@ const ops: FormOp[] = [
   { op: "lpSide", index: 2 },
   { op: "amountPick", index: 0 },
   { op: "amountPick", index: 2 },
-  { op: "quote" },
   { op: "review" },
   { op: "slippage", bps: 300 },
   { op: "share", bps: 10_000 },
@@ -26,6 +25,11 @@ const ops: FormOp[] = [
   { op: "reduceOnly" },
   { op: "usdc" },
   { op: "ask", field: "minWithdrawalShares" },
+  { op: "ask", field: "buyAmount" },
+  { op: "ask", field: "sellAmount" },
+  { op: "trade", side: "buy", bps: 2500 },
+  { op: "trade", side: "sell", bps: 10_000 },
+  { op: "pickToken" },
 ];
 const screens: Screen[] = [
   { kind: "vaults" },

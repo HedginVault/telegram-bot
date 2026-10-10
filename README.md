@@ -67,7 +67,7 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 
 | Where | What you set | API builder |
 | --- | --- | --- |
-| Vault → 💱 Swap | Buy or sell · a held token or a pasted contract address · amount (`1.5`, `25%`, `max`) · slippage (0.5 / 1 / 3% or typed, up to the protocol's 3%) | `jupiter/swap` |
+| Vault → 💱 Swap | Pick a held token or paste a contract address, then its card: 🟢 Buy 25% / 50% of the deposit token, 🔴 Sell 50% / all of the token, or ✏️ a typed amount (`1.5`, `25%`, `max`) straight to the quote · slippage (0.5 / 1 / 3% or typed, up to the protocol's 3%) | `jupiter/swap` |
 | Vault → ➕ New LP | Pool (pasted address, or symbol search sorted by TVL) · side (X only / both / Y only) · shape (Spot / Curve / Bid-Ask) · range preset per side or typed min and max price · amount of each token the range can hold | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
 | DLMM position → ➕ Add liquidity | Shape · amount of each token | `dlmm/add` |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |

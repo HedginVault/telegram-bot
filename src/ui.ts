@@ -24,11 +24,14 @@ export type FormOp =
   | { op: "amountPick"; index: number }
   | { op: "slippage"; bps: number }
   | { op: "share"; bps: number }
+  /** Swap card: quote a buy or sell of `bps` of the vault's input-token balance. */
+  | { op: "trade"; side: "buy" | "sell"; bps: number }
+  /** Swap card: back to the token picker. */
+  | { op: "pickToken" }
   | { op: "ask"; field: TextField }
   | { op: "token"; index: number }
   | { op: "pool"; index: number }
   | { op: "range"; bps: number }
-  | { op: "quote" }
   | { op: "review" }
   /** LP form: create the position without liquidity. */
   | { op: "empty" }
@@ -66,6 +69,8 @@ const TEXT_FIELDS = [
   "depositCap",
   "minDeposit",
   "minWithdrawalShares",
+  "buyAmount",
+  "sellAmount",
 ] as const;
 export type TextField = (typeof TEXT_FIELDS)[number];
 
@@ -147,14 +152,16 @@ const STORE_ID = "[A-Za-z0-9_-]{11}";
 function encodeOp(op: FormOp): string {
   switch (op.op) {
     case "side":
-    case "quote":
     case "review":
     case "empty":
     case "orderType":
     case "postOnly":
     case "reduceOnly":
     case "usdc":
+    case "pickToken":
       return op.op;
+    case "trade":
+      return `${op.side === "buy" ? "by" : "sx"}${op.bps}`;
     case "market":
       return `mk${op.index}`;
     case "slippage":
@@ -178,12 +185,12 @@ function encodeOp(op: FormOp): string {
   }
 }
 
-const PLAIN_OPS = ["side", "quote", "review", "empty", "orderType", "postOnly", "reduceOnly", "usdc"] as const;
+const PLAIN_OPS = ["side", "review", "empty", "orderType", "postOnly", "reduceOnly", "usdc", "pickToken"] as const;
 export const MAX_MARKET_BUTTONS = 16;
 
 function decodeOp(text: string): FormOp | undefined {
   for (const plain of PLAIN_OPS) if (text === plain) return { op: plain };
-  const match = /^(sl|sh|rg|ask|tk|pl|mk|sp|ls|ap)(\d{1,5})$/.exec(text);
+  const match = /^(sl|sh|rg|ask|tk|pl|mk|sp|ls|ap|by|sx)(\d{1,5})$/.exec(text);
   if (!match) return undefined;
   const n = Number(match[2]);
   switch (match[1]) {
@@ -191,6 +198,9 @@ function decodeOp(text: string): FormOp | undefined {
       return n >= 1 && n <= 10_000 ? { op: "slippage", bps: n } : undefined;
     case "sh":
       return n >= 1 && n <= 10_000 ? { op: "share", bps: n } : undefined;
+    case "by":
+    case "sx":
+      return n >= 1 && n <= 10_000 ? { op: "trade", side: match[1] === "by" ? "buy" : "sell", bps: n } : undefined;
     case "rg":
       return n >= 1 && n < 10_000 ? { op: "range", bps: n } : undefined;
     case "ask": {

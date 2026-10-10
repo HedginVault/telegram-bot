@@ -329,8 +329,9 @@ export function createBot(options: {
       await ctx.reply("Send /start for the menu.");
       return;
     }
+    let next: Screen | undefined;
     try {
-      await applyFormText(pending.formId, pending.field, ctx.message.text, session.deps);
+      next = await applyFormText(pending.formId, pending.field, ctx.message.text, session.deps);
     } catch (error) {
       if (error instanceof InputError) {
         await ctx.reply(`${error.message}\nTry again, or send /cancel.`);
@@ -341,7 +342,7 @@ export function createBot(options: {
     awaiting.delete(ctx.chat.id);
     // Move the form below the answer so it stays the newest message.
     await Promise.allSettled([ctx.deleteMessage(pending.promptMessageId), ctx.deleteMessage(pending.formMessageId)]);
-    await replyScreen(ctx, await renderScreen({ kind: "form", formId: pending.formId }, session.deps));
+    await replyScreen(ctx, await renderScreen(next ?? { kind: "form", formId: pending.formId }, session.deps));
   });
 
   bot.catch(async (error, ctx) => {
