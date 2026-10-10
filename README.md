@@ -71,8 +71,8 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | Vault → ➕ New LP | Pool (pasted address, or symbol search sorted by TVL) · side (X only / both / Y only) · shape (Spot / Curve / Bid-Ask) · range preset per side or typed min and max price · amount of each token the range can hold | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
 | DLMM position → ➕ Add liquidity | Shape · amount of each token | `dlmm/add` |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
-| DLMM position → ➖ Remove liquidity | Bins (🧺 All, ⬆️ Above price only, ⬇️ Below price only, ⏫ Top / ⏬ Bottom 25% or 50% of the position's bins, or ✏️ a typed min and max price clipped to the position; picks with no liquidity are not offered, and without per-bin data only All is) · 25% / 50% / 100% | `dlmm/remove`, with the picked inclusive `lowerBinId`/`upperBinId` |
-| DLMM position | 🔁 Flip TOKEN to Bid-Ask: every bin of the non-deposit token (above the price for X, below for Y), withdrawn and re-added as Bid-Ask in one atomic transaction; fails unchanged if the price moves over 10 bins; does not claim fees | `dlmm/flip` |
+| DLMM position → ➖ Remove liquidity | Bins (🧺 All, ⬆️ Above price only, ⬇️ Below price only, or ⏫ Top / ⏬ Bottom 25% or 50% of the position's bins; picks with no liquidity are not offered, and without per-bin data only All is) · 25% / 50% / 100% | `dlmm/remove`, with the picked inclusive `lowerBinId`/`upperBinId` |
+| DLMM position | 🔁 Flip TOKEN to Bid-Ask: every bin of the non-deposit token (above the price for X, below for Y), withdrawn and re-added as Bid-Ask in one atomic transaction; fails unchanged if the price moves over 10 bins; does not claim fees; when not offered, the position card says why (no bin data, or none of that token on its side of the price) | `dlmm/flip` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
 | DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
 | Vault → ➕ New LP | Pool · range (up to 70 bins) · 🫙 Empty position | `dlmm/initialize` |

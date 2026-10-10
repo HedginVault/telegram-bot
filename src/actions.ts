@@ -28,13 +28,11 @@ export interface SideBins {
 
 /** Any inclusive bin range of a position, with what a remove there takes, for display. */
 export interface RangeBins {
-  /** What the manager picked, e.g. "top 25% of bins" or "custom range". */
+  /** What the manager picked, e.g. "top 25% of bins". */
   label: string;
   lowerBinId: number;
   upperBinId: number;
   priceRange: { low: string; high: string };
-  /** A typed range was cut to the position's bins. */
-  clipped: boolean;
   tokenX: TokenRef;
   tokenY: TokenRef;
   /** Display only: summed per-bin amounts in these bins at the remove's share, each bin floored. */

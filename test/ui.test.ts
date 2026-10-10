@@ -26,7 +26,6 @@ const ops: FormOp[] = [
   { op: "reduceOnly" },
   { op: "usdc" },
   { op: "ask", field: "minWithdrawalShares" },
-  { op: "ask", field: "removeRange" },
 ];
 const screens: Screen[] = [
   { kind: "vaults" },

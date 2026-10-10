@@ -4,7 +4,6 @@ import {
   type Form,
   type FormDeps,
   QUICK_PICKS,
-  type RemoveRangeForm,
   amountsInRange,
   createLpForm,
   createOrderForm,
@@ -18,6 +17,7 @@ import {
   renderSwapQuote,
 } from "./forms";
 import {
+  type FlipBlocked,
   STRATEGY_HISTORY_LIMIT,
   confirmMessage,
   navHistoryMessage,
@@ -42,7 +42,6 @@ import {
   ScreenNotice,
   button,
   expired,
-  formButton,
   homeButton,
   keyboard,
   rowsOf,
@@ -92,15 +91,30 @@ function sideLiquidity(s: DlmmStrategy, side: SideBins["side"]): SideLiquidity |
   };
 }
 
+/** Why `sideLiquidity` found nothing to flip on `side`, for the position screen. */
+function flipBlocked(s: DlmmStrategy, side: SideBins["side"]): FlipBlocked {
+  const { lowerBinId, upperBinId, activeBinId, binStep } = s;
+  if (lowerBinId === undefined || upperBinId === undefined || activeBinId === undefined || binStep === undefined) return { reason: "noBins" };
+  const tokenSide = side === "above" ? "x" : "y";
+  const { mint, symbol, decimals } = tokenSide === "x" ? s.tokenX : s.tokenY;
+  const amountOf = (b: { amountX: string; amountY: string }) => BigInt(tokenSide === "x" ? b.amountX : b.amountY);
+  const activeBin = s.bins?.find((b) => b.binId === activeBinId);
+  // Without per-bin data, a side with no bins leaves only the active bin to hold the position's token.
+  const inActiveBin = activeBin
+    ? amountOf(activeBin) > 0n
+    : !s.bins && !flipRange({ lowerBinId, upperBinId }, activeBinId, tokenSide) && activeBinId >= lowerBinId && activeBinId <= upperBinId && amountOf(s) > 0n;
+  return { reason: "empty", token: { mint, symbol, decimals }, side, inActiveBin };
+}
+
 /** The position's bins, pricing, and per-bin amounts; null when the API reported any of them missing. */
-function positionBins(s: DlmmStrategy): Omit<RemoveRangeForm, "kind" | "refId" | "range"> | null {
+function positionBins(s: DlmmStrategy) {
   const { lowerBinId, upperBinId, activeBinId, binStep, bins } = s;
   if (lowerBinId === undefined || upperBinId === undefined || activeBinId === undefined || binStep === undefined || !bins) return null;
   return { position: { lowerBinId, upperBinId }, pricing: { activeBinId, activePrice: s.activePrice, binStep }, bins };
 }
 
 /** A bin range of the position with what it holds at `bps`; null without per-bin data. */
-function rangeBins(s: DlmmStrategy, range: InclusiveBinRange, label: string, clipped: boolean, bps = 10_000): RangeBins | null {
+function rangeBins(s: DlmmStrategy, range: InclusiveBinRange, label: string, bps = 10_000): RangeBins | null {
   const known = positionBins(s);
   if (!known) return null;
   const { amountX, amountY } = amountsInRange(known.bins, range, bps);
@@ -109,7 +123,6 @@ function rangeBins(s: DlmmStrategy, range: InclusiveBinRange, label: string, cli
     label,
     ...range,
     priceRange: { low: price(range.lowerBinId), high: price(range.upperBinId) },
-    clipped,
     tokenX: { mint: s.tokenX.mint, symbol: s.tokenX.symbol, decimals: s.tokenX.decimals },
     tokenY: { mint: s.tokenY.mint, symbol: s.tokenY.symbol, decimals: s.tokenY.decimals },
     amountXBaseUnits: amountX.toString(),
@@ -124,19 +137,19 @@ function quickPicks(s: DlmmStrategy) {
   const known = positionBins(s);
   if (!known) return [];
   return QUICK_PICKS.flatMap((pick) => {
-    const bins = rangeBins(s, quickPickRange(known.position, pick.end, pick.pct), pick.label, false);
+    const bins = rangeBins(s, quickPickRange(known.position, pick.end, pick.pct), pick.label);
     return bins && !isEmpty(bins) ? [{ pick, bins }] : [];
   });
 }
 
 /** The % step for any bin range, leading to the existing remove confirm. */
-function removeRangeScreen(deps: ScreenDeps, refId: string, vault: VaultSummary, s: DlmmStrategy, range: InclusiveBinRange, label: string, clipped: boolean): RenderedScreen {
-  const held = rangeBins(s, range, label, clipped);
+function removeRangeScreen(deps: ScreenDeps, refId: string, vault: VaultSummary, s: DlmmStrategy, range: InclusiveBinRange, label: string): RenderedScreen {
+  const held = rangeBins(s, range, label);
   if (!held || isEmpty(held)) throw new ScreenNotice("Those bins no longer hold liquidity. Open the position again.");
   const base = { vault: vault.address, position: s.position, pairLabel: pairLabel(s) };
   // `held` is non-null, so this is too; the fallback only keeps the range, never widening to all bins.
   const removeButton = (bps: RemoveBps) =>
-    confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps, bins: rangeBins(s, range, label, clipped, bps) ?? held });
+    confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps, bins: rangeBins(s, range, label, bps) ?? held });
   return {
     html: removeRangeAmountMessage(s, held),
     keyboard: keyboard([REMOVE_BPS.map(removeButton), [button("⬅️ Bins", { kind: "removeLp", refId })]]),
@@ -300,32 +313,28 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       if (strategy.lbPair) rows.push([button("➕ Add liquidity", { kind: "addLp", refId: screen.refId })]);
       rows.push([button("➖ Remove liquidity", { kind: "removeLp", refId: screen.refId })]);
       // Flip sells the non-deposit token, so it takes that token's bins only.
-      const flip = sideLiquidity(strategy, flipSide(strategy.tokenX.mint, vault.depositMint) === "x" ? "above" : "below");
+      const flipBins = flipSide(strategy.tokenX.mint, vault.depositMint) === "x" ? "above" : "below";
+      const flip = sideLiquidity(strategy, flipBins);
       if (flip) rows.push([confirmButton(deps, `🔁 Flip ${flip.token.symbol} to Bid-Ask`, { kind: "dlmmFlip", ...base, ...flip })]);
       rows.push(
         [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
         [confirmButton(deps, "🗑 Close position", { kind: "dlmmClose", ...base })],
         [button("🔄 Refresh", screen), back],
       );
-      return { html: positionMessage(vault, strategy, Math.floor(Date.now() / 1000)), keyboard: keyboard(rows) };
+      return { html: positionMessage(vault, strategy, Math.floor(Date.now() / 1000), flip ? undefined : flipBlocked(strategy, flipBins)), keyboard: keyboard(rows) };
     }
     case "removeLp": {
       const { strategy } = await findPosition(deps, screen.refId);
       const above = sideLiquidity(strategy, "above");
       const below = sideLiquidity(strategy, "below");
       const quick = quickPicks(strategy);
-      const known = positionBins(strategy);
       const pick = (text: string, bins: Extract<Screen, { kind: "removeBins" }>["bins"]) => button(text, { kind: "removeBins", refId: screen.refId, bins });
       const rows: Button[][] = [[pick("🧺 All bins", "all")]];
       if (above) rows.push([pick(`⬆️ Above price only · ${above.token.symbol}`, "above")]);
       if (below) rows.push([pick(`⬇️ Below price only · ${below.token.symbol}`, "below")]);
       rows.push(...rowsOf(quick.map((q) => pick(q.pick.button, q.pick.bins)), 2));
-      if (known) {
-        const formId = deps.forms.put({ kind: "removeRange", refId: screen.refId, ...known });
-        rows.push([formButton("✏️ Custom range", formId, { op: "ask", field: "removeRange" })]);
-      }
       rows.push([button("⬅️ Position", { kind: "position", refId: screen.refId })]);
-      return { html: removePickMessage(strategy, above, below, quick.map((q) => ({ button: q.pick.button, bins: q.bins })), known !== null), keyboard: keyboard(rows) };
+      return { html: removePickMessage(strategy, above, below, quick.map((q) => ({ button: q.pick.button, bins: q.bins }))), keyboard: keyboard(rows) };
     }
     case "removeBins": {
       const { vault, strategy } = await findPosition(deps, screen.refId);
@@ -333,7 +342,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       if (quick) {
         const known = positionBins(strategy);
         if (!known) throw new ScreenNotice("The API no longer reports this position's bins. Open the position again.");
-        return removeRangeScreen(deps, screen.refId, vault, strategy, quickPickRange(known.position, quick.end, quick.pct), quick.label, false);
+        return removeRangeScreen(deps, screen.refId, vault, strategy, quickPickRange(known.position, quick.end, quick.pct), quick.label);
       }
       if (screen.bins !== "all" && screen.bins !== "above" && screen.bins !== "below") throw expired();
       const side = screen.bins === "all" ? null : sideLiquidity(strategy, screen.bins);
@@ -358,14 +367,8 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       if (!strategy.lbPair) throw new ScreenNotice("The API did not return this position's pool.");
       return renderForm(deps.forms.put(await createLpForm(api, vault.address, { position: strategy.position, lbPair: strategy.lbPair })), deps);
     }
-    case "form": {
-      const form = deps.forms.get(screen.formId);
-      if (form?.kind !== "removeRange") return renderForm(screen.formId, deps);
-      // Cancelled before a range was typed: back to the bin picker.
-      if (!form.range) return renderScreen({ kind: "removeLp", refId: form.refId }, deps);
-      const { vault, strategy } = await findPosition(deps, form.refId);
-      return removeRangeScreen(deps, form.refId, vault, strategy, form.range, "custom range", form.range.clipped);
-    }
+    case "form":
+      return renderForm(screen.formId, deps);
     case "swapQuote":
       return renderSwapQuote(screen.formId, deps);
     case "confirm": {

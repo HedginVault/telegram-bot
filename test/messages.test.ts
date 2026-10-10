@@ -82,7 +82,6 @@ const hostileRange = {
   lowerBinId: 1,
   upperBinId: 4,
   priceRange: { low: HOSTILE, high: HOSTILE },
-  clipped: true,
   tokenX: hostileToken,
   tokenY: hostileToken,
   amountXBaseUnits: "5",
@@ -118,7 +117,6 @@ const hostileActions: PendingAction[] = [
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 10_000 },
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 5000, bins: hostileBins },
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 2500, bins: hostileRange },
-  { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 2500, bins: { ...hostileRange, clipped: false } },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide, amountIsSideTotal: true },
   { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE },
@@ -234,6 +232,19 @@ describe("messages", () => {
     expect(below).toContain("💰 <b>Value n/a</b>\n├ 0.5 SOL\n└ 75 USDC");
     expect(below).not.toContain("PnL");
     expect(below).not.toContain("Opened");
+    expect(below).not.toContain("Flip");
+  });
+
+  it("explains a missing flip in one italic line", () => {
+    const [, dlmm] = strategies;
+    if (dlmm?.type !== "dlmm") throw new Error("fixture");
+    const line = (blocked: Parameters<typeof positionMessage>[3]) => positionMessage(vaultSummary, dlmm, 0, blocked).split("\n").filter((l) => l.includes("Flip"));
+    const sol = { mint: dlmm.tokenX.mint, symbol: "SOL", decimals: 9 };
+    expect(line({ reason: "noBins" })).toEqual(["<i>🔁 Flip unavailable: this server doesn't report bins</i>"]);
+    expect(line({ reason: "empty", token: sol, side: "above", inActiveBin: false })).toEqual(["<i>🔁 Flip SOL: no SOL above the price to flip</i>"]);
+    expect(line({ reason: "empty", token: { ...sol, symbol: "USDC" }, side: "below", inActiveBin: true })).toEqual([
+      "<i>🔁 Flip USDC: no USDC below the price to flip (the USDC in the current-price bin isn't flipped)</i>",
+    ]);
   });
 
   it("draws the price on a range gauge, with an arrow at the edge when out of range", () => {
@@ -333,13 +344,15 @@ describe("messages", () => {
       ),
       strategiesMessage(hostileVault, [...strategies, ...hostileStrategies, hostileDlmm]),
       hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, { ...hostileDlmm, pnlUsd: -1, pnlPct: -1, createdTs: 1 }, 2) : "",
+      hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, hostileDlmm, 2, { reason: "noBins" }) : "",
+      hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, hostileDlmm, 2, { reason: "empty", token: hostileToken, side: "above", inActiveBin: true }) : "",
+      hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, hostileDlmm, 2, { reason: "empty", token: hostileToken, side: "below", inActiveBin: false }) : "",
       hostileDlmm.type === "dlmm" ? removePickMessage(hostileDlmm, hostileSide, null) : "",
       hostileDlmm.type === "dlmm" ? removePickMessage({ ...hostileDlmm, lowerBinId: 0, upperBinId: 5, activeBinId: 2 }, null, { ...hostileSide, amountIsSideTotal: true }) : "",
       hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, hostileSide) : "",
       hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, null) : "",
-      hostileDlmm.type === "dlmm" ? removePickMessage(hostileDlmm, null, null, [{ button: HOSTILE, bins: hostileRange }], true) : "",
+      hostileDlmm.type === "dlmm" ? removePickMessage(hostileDlmm, null, null, [{ button: HOSTILE, bins: hostileRange }]) : "",
       hostileDlmm.type === "dlmm" ? removeRangeAmountMessage(hostileDlmm, hostileRange) : "",
-      hostileDlmm.type === "dlmm" ? removeRangeAmountMessage(hostileDlmm, { ...hostileRange, clipped: false }) : "",
       errorMessage(HOSTILE, HOSTILE),
       swapFormMessage(hostileSwap, "5"),
       swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),

@@ -66,7 +66,6 @@ const TEXT_FIELDS = [
   "depositCap",
   "minDeposit",
   "minWithdrawalShares",
-  "removeRange",
 ] as const;
 export type TextField = (typeof TEXT_FIELDS)[number];
 

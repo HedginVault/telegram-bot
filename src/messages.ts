@@ -310,8 +310,18 @@ export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): 
   return [`${title} (${strategies.length})`, ...blocks.map((block) => block.join("\n"))].join("\n\n");
 }
 
+/** Why the position screen offers no flip: the server sent no bin ids, or the flip side holds none of its token. */
+export type FlipBlocked = { reason: "noBins" } | { reason: "empty"; token: TokenRef; side: SideBins["side"]; inActiveBin: boolean };
+
+function flipBlockedLine(blocked: FlipBlocked): string {
+  if (blocked.reason === "noBins") return "<i>🔁 Flip unavailable: this server doesn't report bins</i>";
+  const symbol = escapeHtml(blocked.token.symbol);
+  const activeNote = blocked.inActiveBin ? ` (the ${symbol} in the current-price bin isn't flipped)` : "";
+  return `<i>🔁 Flip ${symbol}: no ${symbol} ${SIDE_WORDS[blocked.side]} to flip${activeNote}</i>`;
+}
+
 /** One LP position as a card: where the price is, what it is worth, PnL, fees, and range. */
-export function positionMessage(vault: VaultSummary, s: DlmmStrategy, nowSeconds: number): string {
+export function positionMessage(vault: VaultSummary, s: DlmmStrategy, nowSeconds: number, flipBlocked?: FlipBlocked): string {
   const { tokenX, tokenY } = s;
   const withUsd = (baseUnits: string, token: typeof tokenX) => {
     const value = tokenUsd(baseUnits, token);
@@ -339,6 +349,7 @@ export function positionMessage(vault: VaultSummary, s: DlmmStrategy, nowSeconds
     `🎯 <b>Range</b> · ${escapeHtml(tokenY.symbol)} per ${escapeHtml(tokenX.symbol)}`,
     ...tree([`Min ${price(s.lowerPrice)}`, `Now <b>${price(s.activePrice)}</b>`, `Max ${price(s.upperPrice)}`]),
   );
+  if (flipBlocked) lines.push("", flipBlockedLine(flipBlocked));
   if (s.createdTs !== undefined) lines.push("", `📅 Opened ${utc(s.createdTs)} · open ${duration(Math.max(0, nowSeconds - s.createdTs))}`);
   lines.push(address(s.position));
   return lines.join("\n");
@@ -351,21 +362,19 @@ const binRange = (bins: ShownBins) => `${escapeHtml(bins.priceRange.low)} → ${
 const rangeAmounts = (bins: RangeBins) =>
   `≈ ${amount(bins.amountXBaseUnits, bins.tokenX.decimals, bins.tokenX.symbol)} + ${amount(bins.amountYBaseUnits, bins.tokenY.decimals, bins.tokenY.symbol)}`;
 const rangeSummary = (bins: RangeBins) => `${binRange(bins)} · ${binCount(bins)} bins · ${rangeAmounts(bins)}`;
-const CLIPPED_NOTE = "Your range was clipped to the position's bins.";
 const sideAmount = (side: SideLiquidity) =>
   `${side.amountIsSideTotal ? "up to" : "≈"} ${amount(side.amountBaseUnits, side.token.decimals, side.token.symbol)}`;
 const sideSummary = (side: SideLiquidity) => `${binRange(side.bins)} · ${binCount(side.bins)} bins · ${sideAmount(side)}`;
 
 /**
  * First remove step: which bins. A side without liquidity, or bins the API did not report, is explained instead of offered.
- * `quick` holds the quick picks that hold liquidity, by button text; `custom` says whether a typed range is offered.
+ * `quick` holds the quick picks that hold liquidity, by button text.
  */
 export function removePickMessage(
   s: DlmmStrategy,
   above: SideLiquidity | null,
   below: SideLiquidity | null,
   quick: { button: string; bins: RangeBins }[] = [],
-  custom = false,
 ): string {
   const binsKnown = s.lowerBinId !== undefined && s.upperBinId !== undefined && s.activeBinId !== undefined;
   const sideRow = (label: string, side: SideLiquidity | null, token: TokenRef) =>
@@ -379,7 +388,6 @@ export function removePickMessage(
       sideRow("⬆️ Above price", above, s.tokenX),
       sideRow("⬇️ Below price", below, s.tokenY),
       ...quick.map((q) => `${escapeHtml(q.button)} · ${rangeSummary(q.bins)}`),
-      ...(custom ? [`✏️ Custom range · <i>type a min and max price in ${escapeHtml(s.tokenY.symbol)} per ${escapeHtml(s.tokenX.symbol)}</i>`] : []),
     ]),
   ];
   if (!binsKnown) lines.push("", "<i>The API did not report this position's bins, so only All bins is offered.</i>");
@@ -396,13 +404,12 @@ export function removeAmountMessage(s: DlmmStrategy, side: SideLiquidity | null)
 
 /** Second remove step for any bin range: what those bins hold, then how much to remove. */
 export function removeRangeAmountMessage(s: DlmmStrategy, bins: RangeBins): string {
-  const lines = [
+  return [
     `➖ <b>Remove from ${pair(s.tokenX, s.tokenY)}</b> · ${escapeHtml(bins.label)}`,
     ...tree([`Range ${binRange(bins)}`, `Bins ${binCount(bins)}`, `Holds ${rangeAmounts(bins)}`]),
-  ];
-  if (bins.clipped) lines.push("", `<i>${CLIPPED_NOTE}</i>`);
-  lines.push("", "Pick how much to remove.");
-  return lines.join("\n");
+    "",
+    "Pick how much to remove.",
+  ].join("\n");
 }
 
 export function navHistoryMessage(vault: VaultSummary, points: NavHistoryPoint[]): string {
@@ -721,7 +728,6 @@ function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
     case "dlmmRemove":
       if (action.bins && !("side" in action.bins)) {
         r.rows.push(`Bins <b>${escapeHtml(action.bins.label)}</b> · ${binCount(action.bins)}`, `Range ${binRange(action.bins)}`, `Removes ${rangeAmounts(action.bins)}`);
-        if (action.bins.clipped) r.notes.push(CLIPPED_NOTE);
         r.notes.push("Tokens return to the vault; the other bins stay as they are.");
       } else if (action.bins) {
         r.rows.push(`Bins <b>${SIDE_WORDS[action.bins.side]}</b> only · ${binCount(action.bins)}`, `Range ${binRange(action.bins)}`);

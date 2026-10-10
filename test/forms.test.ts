@@ -8,10 +8,8 @@ import {
   parseLimit,
   parseOrderSlippage,
   parsePrice,
-  parsePriceRange,
   parseSlippage,
   parseVaultName,
-  priceRangeToBins,
   quickPickRange,
   resolveAmount,
   vaultChanges,
@@ -168,41 +166,6 @@ describe("amountsInRange", () => {
   });
 });
 
-describe("parsePriceRange", () => {
-  it.each(["106.5 108.2", "106.5, 108.2", "106.5-108.2", "106.5,108.2", " 106.5 - 108.2 ", "106.5   108.2"])("reads %j", (text) => {
-    expect(parsePriceRange(text)).toEqual({ min: 106.5, max: 108.2 });
-  });
-  it.each(["", "abc", "106.5", "106.5 108.2 110", "-1 5", "1e3 2e3", "$106 $108", "106.5 to 108.2"])("rejects %j", (text) => {
-    expect(() => parsePriceRange(text)).toThrow('Send a min and a max price, like "106.5 108.2", "106.5, 108.2", or "106.5-108.2".');
-  });
-  it("rejects swapped, equal, zero, and non-finite prices", () => {
-    expect(() => parsePriceRange("108.2 106.5")).toThrow("The min price must be below the max price.");
-    expect(() => parsePriceRange("5 5")).toThrow("The min price must be below the max price.");
-    expect(() => parsePriceRange("0 5")).toThrow("Both prices must be positive numbers.");
-    expect(() => parsePriceRange(`1 ${"9".repeat(400)}`)).toThrow("Both prices must be positive numbers.");
-  });
-});
-
-describe("priceRangeToBins", () => {
-  // 150 at bin -100; each bin is 0.1% apart.
-  const pricing = { activeBinId: -100, activePrice: "150", binStep: 10 };
-  const position = { lowerBinId: -110, upperBinId: -90 };
-  it("floors the min and ceils the max to bins", () => {
-    expect(priceRangeToBins(pricing, position, 149.5, 150.5)).toEqual({ lowerBinId: -104, upperBinId: -96, clipped: false });
-  });
-  it("maps an exact bin price to its own bin", () => {
-    expect(priceRangeToBins(pricing, position, 150, 150 * 1.001 ** 2)).toEqual({ lowerBinId: -100, upperBinId: -98, clipped: false });
-  });
-  it("clips to the position and says so", () => {
-    expect(priceRangeToBins(pricing, position, 140, 150)).toEqual({ lowerBinId: -110, upperBinId: -100, clipped: true });
-    expect(priceRangeToBins(pricing, position, 1, 1_000_000)).toEqual({ lowerBinId: -110, upperBinId: -90, clipped: true });
-  });
-  it("rejects a range fully outside the position, naming the position's prices", () => {
-    expect(() => priceRangeToBins(pricing, position, 200, 300)).toThrow("That range is outside this position, which covers 148.5082 → 151.5068.");
-    expect(() => priceRangeToBins(pricing, position, 100, 140)).toThrow("That range is outside this position");
-  });
-});
-
 describe("toActionRequest", () => {
   const usdc = { mint: USDC, symbol: "USDC", decimals: 6 };
   const cases: [Exclude<PendingAction, { kind: "phoenixOnboard" }>, unknown][] = [
@@ -218,7 +181,7 @@ describe("toActionRequest", () => {
         position: "P",
         pairLabel: "SOL/USDC",
         bps: 2500,
-        bins: { label: "custom range", lowerBinId: -104, upperBinId: -96, priceRange: { low: "1", high: "2" }, clipped: true, tokenX: usdc, tokenY: usdc, amountXBaseUnits: "1", amountYBaseUnits: "2" },
+        bins: { label: "top 25% of bins", lowerBinId: -104, upperBinId: -96, priceRange: { low: "1", high: "2" }, tokenX: usdc, tokenY: usdc, amountXBaseUnits: "1", amountYBaseUnits: "2" },
       },
       { action: "dlmm/remove", vault: VAULT, position: "P", bpsToRemove: 2500, lowerBinId: -104, upperBinId: -96 },
     ],
