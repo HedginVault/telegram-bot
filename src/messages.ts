@@ -831,7 +831,7 @@ export function lpAmountMessage(form: LpForm, token: TokenRef, balanceBaseUnits:
   return [
     `💧 <b>How much ${escapeHtml(token.symbol)}?</b>`,
     DIVIDER,
-    `Vault has <b>${amount(balanceBaseUnits, token.decimals, token.symbol)}</b>`,
+    `Idle in vault <b>${amount(balanceBaseUnits, token.decimals, token.symbol)}</b>`,
     `Now ${current ? escapeHtml(describeAmount(current, token, (base, decimals) => amount(base, decimals, "").trim())) : "<i>not set</i>"}`,
     "",
     "<i>Tap a share of the balance, or ✏️ Custom amount to type one.</i>",
@@ -850,7 +850,7 @@ export function lpFormMessage(form: LpForm, range: PriceRange | string | undefin
     DIVIDER,
     `Price <b>${price(pool.activePrice)}</b> ${y} per ${x}`,
   ];
-  if (balances) lines.push(`Vault has ${compact(balances.x, tokenX.decimals, tokenX.symbol)} · ${compact(balances.y, tokenY.decimals, tokenY.symbol)}`);
+  if (balances) lines.push(`Idle in vault ${compact(balances.x, tokenX.decimals, tokenX.symbol)} · ${compact(balances.y, tokenY.decimals, tokenY.symbol)}`);
   lines.push("");
   let holdsX = true;
   let holdsY = true;

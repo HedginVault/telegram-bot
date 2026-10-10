@@ -641,13 +641,29 @@ describe("LP form", () => {
     expect(ui.api.build).toHaveBeenCalledWith("dlmm/open", expect.objectContaining(expected));
   });
 
+  it("sizes 100% from the vault's idle balance, not holdings that include LP positions", async () => {
+    // Holdings count 2.05 USDC sitting in an LP position on top of the 1 USDC idle in the vault.
+    const withLp = { ...holdings, tokens: holdings.tokens.map((t) => (t.token.mint === USDC ? { ...t, amount: "3050000" } : t)) };
+    const ui = setup({ ...tradingApi(), getHoldings: vi.fn(async () => withLp) });
+    await newPosition(ui);
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click("🎯 USDC only");
+    await ui.click("💧 USDC amount");
+    expect(ui.lastScreen().text).toContain("Idle in vault <b>1 USDC</b>");
+    await ui.click("100%");
+    await ui.click("✅ Review");
+    await ui.click("✅ Confirm & send");
+    await ui.settle();
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/open", expect.objectContaining({ amountX: "0", amountY: "1000000" }));
+  });
+
   it("picks an amount as a share of the vault balance, marks it, and goes back without changes", async () => {
     const ui = setup(tradingApi());
     await newPosition(ui);
     await ui.fill("🏊 Pick pool", POOL);
     await ui.click("💧 USDC amount");
     expect(ui.lastScreen().text).toBe(
-      ["💧 <b>How much USDC?</b>", "━━━━━━━━━━━━", "Vault has <b>1 USDC</b>", "Now <i>not set</i>", "", "<i>Tap a share of the balance, or ✏️ Custom amount to type one.</i>"].join("\n"),
+      ["💧 <b>How much USDC?</b>", "━━━━━━━━━━━━", "Idle in vault <b>1 USDC</b>", "Now <i>not set</i>", "", "<i>Tap a share of the balance, or ✏️ Custom amount to type one.</i>"].join("\n"),
     );
     const rows = () => ui.lastScreen().reply_markup?.inline_keyboard.map((row) => row.map((b) => b.text));
     expect(rows()).toEqual([["25%", "50%", "75%", "100%"], ["✏️ Custom amount"], ["⬅️ Back"]]);

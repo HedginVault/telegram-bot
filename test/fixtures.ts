@@ -91,7 +91,7 @@ export const vaultDetail: VaultDetail = {
   shareMint: "Share11111111111111111111111111111111111111",
   shareSupply: "1470000",
   idleBalance: "1000000",
-  unmanagedHoldings: [],
+  unmanagedHoldings: [{ token: { mint: SOL, symbol: "SOL", decimals: 9 }, amount: "10000000" }],
   pendingDeposits: "5000000",
   pendingWithdrawalShares: "2000000",
   unclaimedManagerFeeShares: "500000",

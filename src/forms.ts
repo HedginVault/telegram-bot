@@ -1,9 +1,9 @@
 import {
   type DlmmShape,
   type HedgeClient,
-  type Holdings,
   type PoolInfo,
   type PriceRange,
+  type VaultDetail,
   binRangeForPrices,
   formatUnits,
   parseUnits,
@@ -300,7 +300,12 @@ export type FormResult = { kind: "show"; screen: Screen } | { kind: "ask"; field
 const SHAPE_LABEL: Record<DlmmShape, string> = { spot: "Spot", curve: "Curve", bidAsk: "Bid-Ask" };
 export const shapeLabel = (shape: DlmmShape) => SHAPE_LABEL[shape];
 
-const balanceOf = (holdings: Holdings, mint: string) => holdings.tokens.find((t) => t.token.mint === mint)?.amount ?? "0";
+/**
+ * What the vault can spend now: tokens in its own token accounts. `getHoldings` totals also count
+ * tokens inside LP positions, fees, and Phoenix, which a deposit or swap cannot move.
+ */
+const idleBalanceOf = (vault: VaultDetail, mint: string) =>
+  mint === vault.depositMint ? vault.idleBalance : vault.unmanagedHoldings.find((h) => h.token.mint === mint)?.amount ?? "0";
 const tokenRef = ({ mint, symbol, decimals }: TokenRef): TokenRef => ({ mint, symbol, decimals });
 export const fmt = (baseUnits: string, token: TokenRef) => `${formatUnits(baseUnits, token.decimals)} ${token.symbol}`;
 
@@ -737,9 +742,9 @@ async function lpAction(form: LpForm, api: HedgeClient): Promise<PendingAction> 
   const pool = form.pool;
   if (!pool) throw new InputError("Pick a pool first.");
   if (!form.amountX && !form.amountY) throw new InputError("Set an amount for at least one token.");
-  const holdings = await api.getHoldings(form.vault);
-  const amountX = form.amountX ? resolveAmount(form.amountX, balanceOf(holdings, pool.tokenX.mint)) : "0";
-  const amountY = form.amountY ? resolveAmount(form.amountY, balanceOf(holdings, pool.tokenY.mint)) : "0";
+  const vault = await api.getVault(form.vault);
+  const amountX = form.amountX ? resolveAmount(form.amountX, idleBalanceOf(vault, pool.tokenX.mint)) : "0";
+  const amountY = form.amountY ? resolveAmount(form.amountY, idleBalanceOf(vault, pool.tokenY.mint)) : "0";
   if (amountX === "0" && amountY === "0") throw new InputError("Those amounts are zero at the vault's current balances.");
   const liquidity = { tokenX: tokenRef(pool.tokenX), tokenY: tokenRef(pool.tokenY), amountX, amountY, shape: form.shape };
   const pairLabel = `${pool.tokenX.symbol}/${pool.tokenY.symbol}`;
@@ -785,7 +790,7 @@ function emptyPositionAction(form: LpForm): PendingAction {
 async function phoenixTransferAction(form: PhoenixTransferForm, api: HedgeClient): Promise<PendingAction> {
   if (!form.amount) throw new InputError("Set an amount first.");
   let balance: string;
-  if (form.direction === "deposit") balance = balanceOf(await api.getHoldings(form.vault), form.usdc.mint);
+  if (form.direction === "deposit") balance = idleBalanceOf(await api.getVault(form.vault), form.usdc.mint);
   else {
     const phoenix = await api.getPhoenix(form.vault);
     const withdrawable = phoenix.account?.withdrawable ?? phoenix.withdrawable;
@@ -832,9 +837,9 @@ export async function renderForm(formId: string, deps: FormDeps): Promise<Render
   const form = getForm(deps, formId);
   switch (form.kind) {
     case "swap":
-      return renderSwapForm(formId, form, await deps.api.getHoldings(form.vault), deps);
+      return renderSwapForm(formId, form, await deps.api.getVault(form.vault), deps);
     case "lp":
-      return renderLpForm(formId, form, await deps.api.getHoldings(form.vault));
+      return renderLpForm(formId, form, await deps.api.getVault(form.vault));
     case "phoenixTransfer":
       return renderPhoenixTransferForm(formId, form);
     case "order":
@@ -910,10 +915,10 @@ function renderTrackForm(formId: string, form: TrackForm): RenderedScreen {
   return { html: trackFormMessage(form), keyboard: keyboard(rows) };
 }
 
-function renderSwapForm(formId: string, form: SwapForm, holdings: Holdings, deps: FormDeps): RenderedScreen {
+function renderSwapForm(formId: string, form: SwapForm, vault: VaultDetail, deps: FormDeps): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const tokens = swapTokens(form);
-  const inputBalance = tokens ? balanceOf(holdings, tokens.input.mint) : undefined;
+  const inputBalance = tokens ? idleBalanceOf(vault, tokens.input.mint) : undefined;
   const rows: Button[][] = [
     [op(form.side === "buy" ? `🟢 Buying · tap to sell` : `🔴 Selling · tap to buy`, { op: "side" })],
     [
@@ -946,11 +951,11 @@ const marked = ([icon, text]: [string, string], on: boolean) => `${on ? "✅" : 
 /** "±5%" around the price, or "+10%" above / "−10%" below it for one side. */
 export const rangePresetLabel = (side: LpSide, bps: number) => `${side === "both" ? "±" : side === "x" ? "+" : "−"}${bps / 100}%`;
 
-function renderLpForm(formId: string, form: LpForm, holdings: Holdings): RenderedScreen {
+function renderLpForm(formId: string, form: LpForm, vault: VaultDetail): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const pool = form.pool;
   const range = form.mode === "open" ? formRange(form) : undefined;
-  const balances = pool ? { x: balanceOf(holdings, pool.tokenX.mint), y: balanceOf(holdings, pool.tokenY.mint) } : undefined;
+  const balances = pool ? { x: idleBalanceOf(vault, pool.tokenX.mint), y: idleBalanceOf(vault, pool.tokenY.mint) } : undefined;
   const html = lpFormMessage(form, range, balances);
   const back = button("⬅️ Vault", { kind: "vault", vault: form.vault });
   if (!pool) {
@@ -1007,8 +1012,8 @@ export async function renderSwapQuote(formId: string, deps: FormDeps): Promise<R
   if (form.kind !== "swap") throw expired();
   const tokens = swapTokens(form);
   if (!tokens || !form.amount || !form.token) throw new ScreenNotice("Pick a token and an amount first.");
-  const holdings = await deps.api.getHoldings(form.vault);
-  const amountBaseUnits = resolveAmount(form.amount, balanceOf(holdings, tokens.input.mint));
+  const vault = await deps.api.getVault(form.vault);
+  const amountBaseUnits = resolveAmount(form.amount, idleBalanceOf(vault, tokens.input.mint));
   if (amountBaseUnits === "0") throw new InputError(`The vault holds no ${tokens.input.symbol}.`);
   const quote = await deps.api.getQuote({
     vault: form.vault,
