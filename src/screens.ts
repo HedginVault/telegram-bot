@@ -1,5 +1,5 @@
-import type { HedgeClient, Strategy, VaultStatus, VaultSummary } from "@hedginvault/sdk";
-import { type PendingAction, REMOVE_BPS, type RemoveBps, actionVault } from "./actions";
+import { type HedgeClient, type Strategy, type VaultStatus, type VaultSummary, binPrice, flipRange, flipSide } from "@hedginvault/sdk";
+import { type PendingAction, REMOVE_BPS, type RemoveBps, type SideBins, type SideLiquidity, actionVault } from "./actions";
 import {
   type Form,
   type FormDeps,
@@ -9,6 +9,7 @@ import {
   createSwapForm,
   createTrackForm,
   createVaultForm,
+  formatPrice,
   renderForm,
   renderSwapQuote,
 } from "./forms";
@@ -18,6 +19,8 @@ import {
   navHistoryMessage,
   phoenixMessage,
   positionMessage,
+  removeAmountMessage,
+  removePickMessage,
   requestsMessage,
   settingsMessage,
   strategiesMessage,
@@ -56,6 +59,32 @@ const STATUS_BUTTONS: { status: VaultStatus; text: string }[] = [
   { status: "paused", text: "🔴 Paused" },
 ];
 const pairLabel = (s: DlmmStrategy) => `${s.tokenX.symbol}/${s.tokenY.symbol}`;
+
+/**
+ * The position's bins strictly above (token X) or below (token Y) the price and how much of that token they hold;
+ * null when the API reported no bin ids or the side holds nothing.
+ */
+function sideLiquidity(s: DlmmStrategy, side: SideBins["side"]): SideLiquidity | null {
+  const { lowerBinId, upperBinId, activeBinId, binStep } = s;
+  if (lowerBinId === undefined || upperBinId === undefined || activeBinId === undefined || binStep === undefined) return null;
+  const tokenSide = side === "above" ? "x" : "y";
+  const range = flipRange({ lowerBinId, upperBinId }, activeBinId, tokenSide);
+  if (!range) return null;
+  const amountOf = (b: { amountX: string; amountY: string }) => BigInt(tokenSide === "x" ? b.amountX : b.amountY);
+  const amount = s.bins
+    ? s.bins.filter((b) => b.binId >= range.lowerBinId && b.binId <= range.upperBinId).reduce((sum, b) => sum + amountOf(b), 0n)
+    : amountOf(s);
+  if (amount === 0n) return null;
+  const pricing = { activeBinId, activePrice: s.activePrice, binStep };
+  const { mint, symbol, decimals } = tokenSide === "x" ? s.tokenX : s.tokenY;
+  return {
+    bins: { side, ...range, priceRange: { low: formatPrice(binPrice(pricing, range.lowerBinId)), high: formatPrice(binPrice(pricing, range.upperBinId)) } },
+    token: { mint, symbol, decimals },
+    activeBinId,
+    amountBaseUnits: amount.toString(),
+    amountIsSideTotal: !s.bins,
+  };
+}
 
 async function findVault(api: HedgeClient, address: string): Promise<VaultSummary> {
   const vault = (await api.listVaults()).find((v) => v.address === address);
@@ -210,16 +239,40 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       const { vault, strategy } = await findPosition(deps, screen.refId);
       const back = button("⬅️ Strategies", { kind: "strategies", vault: vault.address });
       const base = { vault: vault.address, position: strategy.position, pairLabel: pairLabel(strategy) };
-      const removeButton = (bps: RemoveBps) => confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps });
       const rows: Button[][] = [[confirmButton(deps, "💰 Claim fees", { kind: "dlmmClaim", ...base })]];
       if (strategy.lbPair) rows.push([button("➕ Add liquidity", { kind: "addLp", refId: screen.refId })]);
+      rows.push([button("➖ Remove liquidity", { kind: "removeLp", refId: screen.refId })]);
+      // Flip sells the non-deposit token, so it takes that token's bins only.
+      const flip = sideLiquidity(strategy, flipSide(strategy.tokenX.mint, vault.depositMint) === "x" ? "above" : "below");
+      if (flip) rows.push([confirmButton(deps, `🔁 Flip ${flip.token.symbol} to Bid-Ask`, { kind: "dlmmFlip", ...base, ...flip })]);
       rows.push(
-        REMOVE_BPS.map(removeButton),
         [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
         [confirmButton(deps, "🗑 Close position", { kind: "dlmmClose", ...base })],
         [button("🔄 Refresh", screen), back],
       );
       return { html: positionMessage(vault, strategy, Math.floor(Date.now() / 1000)), keyboard: keyboard(rows) };
+    }
+    case "removeLp": {
+      const { strategy } = await findPosition(deps, screen.refId);
+      const above = sideLiquidity(strategy, "above");
+      const below = sideLiquidity(strategy, "below");
+      const pick = (text: string, bins: Extract<Screen, { kind: "removeBins" }>["bins"]) => button(text, { kind: "removeBins", refId: screen.refId, bins });
+      const rows: Button[][] = [[pick("🧺 All bins", "all")]];
+      if (above) rows.push([pick(`⬆️ Above price only · ${above.token.symbol}`, "above")]);
+      if (below) rows.push([pick(`⬇️ Below price only · ${below.token.symbol}`, "below")]);
+      rows.push([button("⬅️ Position", { kind: "position", refId: screen.refId })]);
+      return { html: removePickMessage(strategy, above, below), keyboard: keyboard(rows) };
+    }
+    case "removeBins": {
+      const { vault, strategy } = await findPosition(deps, screen.refId);
+      const side = screen.bins === "all" ? null : sideLiquidity(strategy, screen.bins);
+      if (screen.bins !== "all" && !side) throw new ScreenNotice("Those bins no longer hold liquidity. Open the position again.");
+      const base = { vault: vault.address, position: strategy.position, pairLabel: pairLabel(strategy) };
+      const removeButton = (bps: RemoveBps) => confirmButton(deps, `➖ ${bps / 100}%`, { kind: "dlmmRemove", ...base, bps, ...(side && { bins: side.bins }) });
+      return {
+        html: removeAmountMessage(strategy, side),
+        keyboard: keyboard([REMOVE_BPS.map(removeButton), [button("⬅️ Bins", { kind: "removeLp", refId: screen.refId })]]),
+      };
     }
     case "newSwap": {
       const vault = await findVault(api, screen.vault);

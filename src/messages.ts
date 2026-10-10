@@ -14,7 +14,7 @@ import {
   type VaultStatus,
   type VaultSummary,
 } from "@hedginvault/sdk";
-import type { Liquidity, PendingAction, VaultChanges } from "./actions";
+import { type Liquidity, MAX_ACTIVE_BIN_SLIPPAGE, type PendingAction, type SideBins, type SideLiquidity, type VaultChanges } from "./actions";
 import {
   type AmountInput,
   type LpForm,
@@ -344,6 +344,40 @@ export function positionMessage(vault: VaultSummary, s: DlmmStrategy, nowSeconds
   return lines.join("\n");
 }
 
+const SIDE_WORDS: Record<SideBins["side"], string> = { above: "above the price", below: "below the price" };
+const binCount = (bins: SideBins) => bins.upperBinId - bins.lowerBinId + 1;
+const binRange = (bins: SideBins) => `${escapeHtml(bins.priceRange.low)} → ${escapeHtml(bins.priceRange.high)}`;
+const sideAmount = (side: SideLiquidity) =>
+  `${side.amountIsSideTotal ? "up to" : "≈"} ${amount(side.amountBaseUnits, side.token.decimals, side.token.symbol)}`;
+const sideSummary = (side: SideLiquidity) => `${binRange(side.bins)} · ${binCount(side.bins)} bins · ${sideAmount(side)}`;
+
+/** First remove step: which bins. A side without liquidity, or bins the API did not report, is explained instead of offered. */
+export function removePickMessage(s: DlmmStrategy, above: SideLiquidity | null, below: SideLiquidity | null): string {
+  const binsKnown = s.lowerBinId !== undefined && s.upperBinId !== undefined && s.activeBinId !== undefined;
+  const sideRow = (label: string, side: SideLiquidity | null, token: TokenRef) =>
+    `${label} · ${side ? sideSummary(side) : `<i>${binsKnown ? `no ${escapeHtml(token.symbol)} there` : "not reported"}</i>`}`;
+  const lines = [
+    `➖ <b>Remove from ${pair(s.tokenX, s.tokenY)}</b>`,
+    "Pick the bins, then how much.",
+    "",
+    ...tree([
+      `🧺 All bins · ${compact(s.amountX, s.tokenX.decimals, s.tokenX.symbol)} + ${compact(s.amountY, s.tokenY.decimals, s.tokenY.symbol)}`,
+      sideRow("⬆️ Above price", above, s.tokenX),
+      sideRow("⬇️ Below price", below, s.tokenY),
+    ]),
+  ];
+  if (!binsKnown) lines.push("", "<i>The API did not report this position's bins, so only All bins is offered.</i>");
+  return lines.join("\n");
+}
+
+/** Second remove step: how much of the chosen bins; `side` is null for all bins. */
+export function removeAmountMessage(s: DlmmStrategy, side: SideLiquidity | null): string {
+  const lines = [`➖ <b>Remove from ${pair(s.tokenX, s.tokenY)}</b> · ${side ? `${SIDE_WORDS[side.bins.side]} only` : "all bins"}`];
+  if (side) lines.push(...tree([`Range ${binRange(side.bins)}`, `Bins ${binCount(side.bins)}`, `Holds ${sideAmount(side)}`]));
+  lines.push("", "Pick how much to remove.");
+  return lines.join("\n");
+}
+
 export function navHistoryMessage(vault: VaultSummary, points: NavHistoryPoint[]): string {
   const title = `📊 <b>${escapeHtml(vault.name)}</b> · NAV history`;
   if (points.length === 0) return `${title}\n\nNo NAV posted yet.`;
@@ -549,7 +583,9 @@ export function actionTitle(action: PendingAction): string {
     case "dlmmClaim":
       return `Claim fees from the ${escapeHtml(action.pairLabel)} position`;
     case "dlmmRemove":
-      return `Remove ${action.bps / 100}% of the ${escapeHtml(action.pairLabel)} position`;
+      return `Remove ${action.bps / 100}% of the ${escapeHtml(action.pairLabel)} position${action.bins ? ` (bins ${SIDE_WORDS[action.bins.side]})` : ""}`;
+    case "dlmmFlip":
+      return `Flip ${escapeHtml(action.token.symbol)} to Bid-Ask in the ${escapeHtml(action.pairLabel)} position`;
     case "dlmmZapOut":
       return `Zap out the ${escapeHtml(action.pairLabel)} position to ${escapeHtml(action.depositSymbol)}`;
     case "closeStrategy":
@@ -656,8 +692,28 @@ function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
       r.notes.push(`${shapeLabel(action.liquidity.shape)} shape across the position's existing range.`);
       break;
     case "dlmmRemove":
-      if (action.bps === 10_000) r.notes.push("Tokens return to the vault; the empty position stays open.");
+      if (action.bins) {
+        r.rows.push(`Bins <b>${SIDE_WORDS[action.bins.side]}</b> only · ${binCount(action.bins)}`, `Range ${binRange(action.bins)}`);
+        r.notes.push("Tokens return to the vault; the other bins stay as they are.");
+      } else if (action.bps === 10_000) r.notes.push("Tokens return to the vault; the empty position stays open.");
       break;
+    case "dlmmFlip": {
+      const token = escapeHtml(action.token.symbol);
+      r.headline = `Flip ${token} to Bid-Ask in ${escapeHtml(action.pairLabel)} LP`;
+      r.rows.push(
+        `Token <b>${token}</b>`,
+        `Amount ${action.amountIsSideTotal ? "up to" : "≈"} ${amount(action.amountBaseUnits, action.token.decimals, action.token.symbol)}`,
+        `Range ${binRange(action.bins)}`,
+        `Bins ${binCount(action.bins)} · ${SIDE_WORDS[action.bins.side]}`,
+      );
+      if (action.amountIsSideTotal) r.notes.push("The API did not report per-bin amounts, so the amount shown is the position's whole side.");
+      r.notes.push(
+        `One atomic transaction: withdraws all ${token} from these bins and re-adds it to the same bins as Bid-Ask.`,
+        `If the price moves more than ${MAX_ACTIVE_BIN_SLIPPAGE} bins first, it fails and nothing changes.`,
+        "Does not claim fees. Use 💰 Claim fees for those.",
+      );
+      break;
+    }
     case "dlmmZapOut":
       r.notes.push("Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.");
       break;
@@ -950,6 +1006,7 @@ const ERROR_HINTS: Record<string, string> = {
   Expired: "The transaction expired before it landed. It did not execute; you can try again.",
   PhoenixAlreadyOnboarded: "The vault's Phoenix trader is already onboarded. Open 📈 Phoenix again to deposit and trade.",
   PhoenixNoMark: "Phoenix has no mark price for this market right now. Try again shortly, or use a limit order.",
+  Stale: "The pool price moved since the bot read it, so this step was not sent. Refresh and try again.",
   HistoryUnavailable: "This server keeps no history database, so history is not available.",
   InvalidBasisPoints: "A fee must be between 0% and 100%.",
   InvalidMinimumAmount: "The minimum deposit and minimum withdrawal must both be more than zero.",

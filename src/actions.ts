@@ -5,7 +5,7 @@ export const REMOVE_BPS = [2500, 5000, 10_000] as const;
 export type RemoveBps = (typeof REMOVE_BPS)[number];
 // Zap-out chains remove, claim, and a swap back to the deposit token, so it gets more room than a swap.
 export const ZAP_OUT_SLIPPAGE_BPS = 100;
-// Bins the active price may move between building and landing before the add is rejected.
+// Bins the active price may move between building and landing before an add or flip is rejected.
 export const MAX_ACTIVE_BIN_SLIPPAGE = 10;
 
 /** Both sides of a liquidity deposit, in base units, with the tokens for display. */
@@ -15,6 +15,25 @@ export interface Liquidity {
   amountX: string;
   amountY: string;
   shape: DlmmShape;
+}
+
+/** Position bins on one side of the price, both ends inclusive as the API takes them. */
+export interface SideBins {
+  side: "above" | "below";
+  lowerBinId: number;
+  upperBinId: number;
+  /** Display only: prices of the first and last bin. */
+  priceRange: { low: string; high: string };
+}
+
+/** One side's bins of a position and the token they hold, as the remove picker and flip use them. */
+export interface SideLiquidity {
+  bins: SideBins;
+  token: TokenRef;
+  activeBinId: number;
+  amountBaseUnits: string;
+  /** No per-bin data from the API: `amountBaseUnits` is the position's whole side, the active bin included. */
+  amountIsSideTotal: boolean;
 }
 
 /** Fields of a `vault/update` besides the vault; only the ones given change. */
@@ -35,7 +54,21 @@ export type PendingAction =
       unverified: boolean;
     }
   | { kind: "dlmmClaim"; vault: string; position: string; pairLabel: string }
-  | { kind: "dlmmRemove"; vault: string; position: string; pairLabel: string; bps: RemoveBps }
+  /** Without `bins`, removes from every bin. */
+  | { kind: "dlmmRemove"; vault: string; position: string; pairLabel: string; bps: RemoveBps; bins?: SideBins }
+  | {
+      kind: "dlmmFlip";
+      vault: string;
+      position: string;
+      pairLabel: string;
+      token: TokenRef;
+      bins: SideBins;
+      /** The active bin the bot read; the API rejects the flip if the price moved further than the slippage. */
+      activeBinId: number;
+      /** Display only: the token in those bins, or the position's whole side when the API sent no per-bin data. */
+      amountBaseUnits: string;
+      amountIsSideTotal: boolean;
+    }
   | { kind: "dlmmZapOut"; vault: string; position: string; pairLabel: string; depositSymbol: string }
   | { kind: "dlmmAdd"; vault: string; position: string; pairLabel: string; liquidity: Liquidity }
   | {
@@ -111,8 +144,20 @@ export function toActionRequest(action: Exclude<PendingAction, { kind: "phoenixO
       };
     case "dlmmClaim":
       return { action: "dlmm/claim-fee", vault: action.vault, position: action.position };
-    case "dlmmRemove":
-      return { action: "dlmm/remove", vault: action.vault, position: action.position, bpsToRemove: action.bps };
+    case "dlmmRemove": {
+      const remove = { action: "dlmm/remove", vault: action.vault, position: action.position, bpsToRemove: action.bps } as const;
+      return action.bins ? { ...remove, lowerBinId: action.bins.lowerBinId, upperBinId: action.bins.upperBinId } : remove;
+    }
+    case "dlmmFlip":
+      return {
+        action: "dlmm/flip",
+        vault: action.vault,
+        position: action.position,
+        lowerBinId: action.bins.lowerBinId,
+        upperBinId: action.bins.upperBinId,
+        activeBinId: action.activeBinId,
+        maxActiveBinSlippage: MAX_ACTIVE_BIN_SLIPPAGE,
+      };
     case "dlmmZapOut":
       return { action: "dlmm/zap-out", vault: action.vault, position: action.position, slippageBps: ZAP_OUT_SLIPPAGE_BPS };
     case "closeStrategy":

@@ -71,7 +71,8 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | Vault → ➕ New LP | Pool (pasted address, or symbol search sorted by TVL) · side (X only / both / Y only) · shape (Spot / Curve / Bid-Ask) · range preset per side or typed min and max price · amount of each token the range can hold | `dlmm/open` (+ `dlmm/extend` continuations past 70 bins) |
 | DLMM position → ➕ Add liquidity | Shape · amount of each token | `dlmm/add` |
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
-| DLMM position | ➖ 25% / 50% / 100% | `dlmm/remove` |
+| DLMM position → ➖ Remove liquidity | Bins (🧺 All, ⬆️ Above price only, ⬇️ Below price only; a side with no liquidity is not offered) · 25% / 50% / 100% | `dlmm/remove`, with the side's inclusive `lowerBinId`/`upperBinId` |
+| DLMM position | 🔁 Flip TOKEN to Bid-Ask: every bin of the non-deposit token (above the price for X, below for Y), withdrawn and re-added as Bid-Ask in one atomic transaction; fails unchanged if the price moves over 10 bins; does not claim fees | `dlmm/flip` |
 | DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
 | DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
 | Vault → ➕ New LP | Pool · range (up to 70 bins) · 🫙 Empty position | `dlmm/initialize` |
@@ -149,6 +150,7 @@ missing action so the manager can ask the admin for it.
 | New LP position | `dlmm/open`, plus `dlmm/extend` for ranges over 70 bins |
 | Empty position | `dlmm/initialize` |
 | Add liquidity · claim fees · remove | `dlmm/add` (+ `dlmm/add-range`), `dlmm/claim-fee`, `dlmm/remove` |
+| Flip to Bid-Ask | `dlmm/flip` |
 | Zap out | `dlmm/zap-out`, `dlmm/zap-out/swap` |
 | Close position · close empty strategy | `dlmm/close`, `strategy/close` |
 | Phoenix setup | `phoenix/initialize`, then `phoenix/onboard` |

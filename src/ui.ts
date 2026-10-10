@@ -38,6 +38,11 @@ export type FormOp =
   | { op: "reduceOnly" }
   | { op: "usdc" };
 
+/** Which bins of a position a remove takes: all, or only those strictly above or below the price. */
+// Append only: callback data carries the index.
+export const REMOVE_BINS = ["all", "above", "below"] as const;
+export type RemoveBins = (typeof REMOVE_BINS)[number];
+
 // Append only: callback data carries a field's index.
 const TEXT_FIELDS = [
   "token",
@@ -80,6 +85,9 @@ export type Screen =
   | { kind: "newVault" }
   | { kind: "position"; refId: string }
   | { kind: "addLp"; refId: string }
+  /** Pick which bins to remove from, then how much. */
+  | { kind: "removeLp"; refId: string }
+  | { kind: "removeBins"; refId: string; bins: RemoveBins }
   | { kind: "form"; formId: string }
   | { kind: "formOp"; formId: string; op: FormOp }
   | { kind: "swapQuote"; formId: string }
@@ -219,7 +227,7 @@ const VAULT_SCREENS = {
   po: "newOrder",
   tt: "trackToken",
 } as const;
-const STORE_SCREENS = { p: "position", al: "addLp", f: "form", q: "swapQuote", c: "confirm", x: "execute" } as const;
+const STORE_SCREENS = { p: "position", al: "addLp", rl: "removeLp", f: "form", q: "swapQuote", c: "confirm", x: "execute" } as const;
 const WALLET_SCREENS = { w: "wallet", ws: "wallets", wn: "walletNew", wi: "walletImport", wk: "walletApiKey", we: "walletExport", wx: "walletReveal" } as const;
 const WALLET_ID_SCREENS = { wu: "walletUse", wr: "walletRemove", wd: "walletRemoved" } as const;
 type VaultScreenKind = (typeof VAULT_SCREENS)[keyof typeof VAULT_SCREENS];
@@ -253,7 +261,10 @@ export function encodeScreen(screen: Screen): string {
       return `${prefixOf<VaultScreenKind>(VAULT_SCREENS, screen.kind)}:${screen.vault}`;
     case "position":
     case "addLp":
+    case "removeLp":
       return `${prefixOf<StoreScreenKind>(STORE_SCREENS, screen.kind)}:${screen.refId}`;
+    case "removeBins":
+      return `rb${REMOVE_BINS.indexOf(screen.bins)}:${screen.refId}`;
     case "form":
     case "swapQuote":
       return `${prefixOf<StoreScreenKind>(STORE_SCREENS, screen.kind)}:${screen.formId}`;
@@ -290,10 +301,13 @@ export function decodeScreen(data: string): Screen | undefined {
   if (stored) {
     const id = stored[2] as string;
     const kind = STORE_SCREENS[stored[1] as keyof typeof STORE_SCREENS];
-    if (kind === "position" || kind === "addLp") return { kind, refId: id };
+    if (kind === "position" || kind === "addLp" || kind === "removeLp") return { kind, refId: id };
     if (kind === "form" || kind === "swapQuote") return { kind, formId: id };
     return { kind, actionId: id };
   }
+  const removeBins = new RegExp(`^rb([0-2]):(${STORE_ID})$`).exec(data);
+  const bins = removeBins && REMOVE_BINS[Number(removeBins[1])];
+  if (removeBins && bins) return { kind: "removeBins", refId: removeBins[2] as string, bins };
   const formOp = new RegExp(`^o:(${STORE_ID}):(\\w{2,10})$`).exec(data);
   const op = formOp && decodeOp(formOp[2] as string);
   return formOp && op ? { kind: "formOp", formId: formOp[1] as string, op } : undefined;

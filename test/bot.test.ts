@@ -426,6 +426,8 @@ describe("trading", () => {
     await click("🧩 Strategies");
     await click("⚙️ SOL/USDC position");
     const claim = buttons().find((b) => b.text === "💰 Claim fees")?.callback_data ?? "";
+    await click("➖ Remove liquidity");
+    await click("🧺 All bins");
     const remove = buttons().find((b) => b.text === "➖ 50%")?.callback_data ?? "";
     await tap(claim);
     await click("✅ Confirm & send");
@@ -439,7 +441,6 @@ describe("trading", () => {
 
   it.each([
     ["💰 Claim fees", "dlmm/claim-fee", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111" }],
-    ["➖ 50%", "dlmm/remove", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", bpsToRemove: 5000 }],
     ["🔁 Zap out to USDC", "dlmm/zap-out", { vault: VAULT, position: "Pos1111111111111111111111111111111111111111", slippageBps: 100 }],
   ])("builds %s on a DLMM position", async (label, action, body) => {
     const { send, click, api, settle } = setup(tradingApi());
@@ -451,6 +452,136 @@ describe("trading", () => {
     await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith(action, body);
+  });
+
+  it.each([
+    ["🧺 All bins", {}],
+    ["⬆️ Above price only · SOL", { lowerBinId: -99, upperBinId: -90 }],
+    ["⬇️ Below price only · USDC", { lowerBinId: -110, upperBinId: -101 }],
+  ])("removes 50%% of %s", async (preset, range) => {
+    const { send, click, api, settle } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    await click(preset);
+    await click("➖ 50%");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/remove", { vault: VAULT, position: POSITION, bpsToRemove: 5000, ...range });
+  });
+
+  it("shows a side remove's bins as prices on the confirm screen", async () => {
+    const { send, click, lastScreen } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("➖ Remove liquidity");
+    expect(lastScreen().text).toContain("⬆️ Above price · 150.15 → 151.5068 · 10 bins · ≈ 0.4 SOL");
+    await click("⬆️ Above price only · SOL");
+    await click("➖ 100%");
+    expect(lastScreen().text).toContain("Remove 100% of the SOL/USDC position (bins above the price)");
+    expect(lastScreen().text).toContain("Bins <b>above the price</b> only · 10");
+    expect(lastScreen().text).toContain("Range 150.15 → 151.5068");
+  });
+
+  it("hides a side with no liquidity and explains it", async () => {
+    const [, dlmm] = strategies;
+    const noX = dlmm?.type === "dlmm" ? { ...dlmm, bins: dlmm.bins?.map((b) => ({ ...b, amountX: b.binId > -100 ? "0" : b.amountX })) } : dlmm;
+    const { send, click, buttons, lastScreen } = setup({ ...tradingApi(), getStrategies: vi.fn(async () => (noX ? [noX] : [])) });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    expect(buttons().map((b) => b.text)).not.toContain("🔁 Flip SOL to Bid-Ask");
+    await click("➖ Remove liquidity");
+    expect(buttons().map((b) => b.text)).toEqual(["🧺 All bins", "⬇️ Below price only · USDC", "⬅️ Position"]);
+    expect(lastScreen().text).toContain("⬆️ Above price · <i>no SOL there</i>");
+  });
+
+  it("offers only all bins and no flip when the API reports no bins", async () => {
+    const [, dlmm] = strategies;
+    const old = dlmm?.type === "dlmm" ? { ...dlmm, lowerBinId: undefined, upperBinId: undefined, activeBinId: undefined, binStep: undefined, bins: undefined } : dlmm;
+    const { send, click, buttons, lastScreen } = setup({ ...tradingApi(), getStrategies: vi.fn(async () => (old ? [old] : [])) });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    expect(buttons().some((b) => b.text.startsWith("🔁 Flip"))).toBe(false);
+    await click("➖ Remove liquidity");
+    expect(buttons().map((b) => b.text)).toEqual(["🧺 All bins", "⬅️ Position"]);
+    expect(lastScreen().text).toContain("The API did not report this position's bins, so only All bins is offered.");
+  });
+
+  it("flips the non-deposit token's bins with the active bin it read", async () => {
+    const { send, click, api, settle, lastScreen } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("🔁 Flip SOL to Bid-Ask");
+    const review = lastScreen().text;
+    expect(review).toContain("<b>Flip SOL to Bid-Ask in SOL/USDC LP</b>");
+    expect(review).toContain("├ Token <b>SOL</b>");
+    expect(review).toContain("├ Amount ≈ 0.4 SOL");
+    expect(review).toContain("├ Range 150.15 → 151.5068");
+    expect(review).toContain("└ Bins 10 · above the price");
+    expect(review).toContain("One atomic transaction");
+    expect(review).toContain("If the price moves more than 10 bins first, it fails and nothing changes.");
+    expect(review).toContain("Does not claim fees.");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/flip", {
+      vault: VAULT,
+      position: POSITION,
+      lowerBinId: -99,
+      upperBinId: -90,
+      activeBinId: -100,
+      maxActiveBinSlippage: 10,
+    });
+  });
+
+  it("flips token Y below the price when token X is the deposit token", async () => {
+    const { send, click, api, settle } = setup({ ...tradingApi(), listVaults: vi.fn(async () => [{ ...vaultSummary, depositMint: SOL, depositSymbol: "SOL" }]) });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("🔁 Flip USDC to Bid-Ask");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("dlmm/flip", expect.objectContaining({ lowerBinId: -110, upperBinId: -101, activeBinId: -100 }));
+  });
+
+  it("falls back to the side total when the API sends no per-bin amounts", async () => {
+    const [, dlmm] = strategies;
+    const noBins = dlmm?.type === "dlmm" ? { ...dlmm, bins: undefined } : dlmm;
+    const { send, click, lastScreen } = setup({ ...tradingApi(), getStrategies: vi.fn(async () => (noBins ? [noBins] : [])) });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("🔁 Flip SOL to Bid-Ask");
+    expect(lastScreen().text).toContain("├ Amount up to 0.5 SOL");
+    expect(lastScreen().text).toContain("the amount shown is the position's whole side");
+  });
+
+  it("names the dlmm/flip grant when the key lacks it", async () => {
+    const api = tradingApi();
+    api.build = vi.fn(async () => {
+      throw new ApiError(403, "Forbidden", "Action is not enabled for this key");
+    });
+    const { send, click, settle, lastScreen } = setup(api);
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("⚙️ SOL/USDC position");
+    await click("🔁 Flip SOL to Bid-Ask");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(lastScreen().text).toContain('This API key may not do "dlmm/flip". Ask an admin to enable "dlmm/flip" and "send" for this key in the dashboard.');
   });
 
   it("offers to close an empty swap strategy", async () => {

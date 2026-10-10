@@ -26,6 +26,8 @@ import {
   vaultMessage,
   vaultsMessage,
   positionMessage,
+  removeAmountMessage,
+  removePickMessage,
 } from "../src/messages";
 import type { LpForm, OrderForm, SwapForm, VaultForm } from "../src/forms";
 import { VAULT, holdings, navHistory, phoenixNone, phoenixReady, phoenixRegistered, quote, requestQueue, strategies, strategyHistory, vaultDetail, vaultSummary } from "./fixtures";
@@ -72,6 +74,8 @@ const hostileDlmm: Strategy = {
   pendingFeeX: "3",
   pendingFeeY: "4",
 };
+const hostileBins = { side: "above" as const, lowerBinId: 1, upperBinId: 4, priceRange: { low: HOSTILE, high: HOSTILE } };
+const hostileSide = { bins: hostileBins, token: hostileToken, activeBinId: 0, amountBaseUnits: "5", amountIsSideTotal: false };
 const hostileLiquidity = { tokenX: hostileToken, tokenY: hostileToken, amountX: "1", amountY: "2", shape: "curve" as const };
 const hostileDetail = { ...vaultDetail, name: HOSTILE, depositSymbol: HOSTILE, pendingPerformanceFeeBps: 1, feeEffectiveTs: 1 };
 const hostilePhoenix = {
@@ -100,6 +104,9 @@ const hostileClosed = { strategy: HOSTILE, id: null, type: null, protocolAccount
 const hostileActions: PendingAction[] = [
   { kind: "dlmmAdd", vault: VAULT, position: "P", pairLabel: HOSTILE, liquidity: hostileLiquidity },
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 10_000 },
+  { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 5000, bins: hostileBins },
+  { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide },
+  { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide, amountIsSideTotal: true },
   { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE },
   { kind: "dlmmInit", vault: VAULT, lbPair: "P", pairLabel: HOSTILE, lowerBinId: 0, upperBinId: 5, priceRange: { low: HOSTILE, high: HOSTILE } },
   { kind: "dlmmClose", vault: VAULT, position: "P", pairLabel: HOSTILE },
@@ -312,6 +319,10 @@ describe("messages", () => {
       ),
       strategiesMessage(hostileVault, [...strategies, ...hostileStrategies, hostileDlmm]),
       hostileDlmm.type === "dlmm" ? positionMessage(hostileVault, { ...hostileDlmm, pnlUsd: -1, pnlPct: -1, createdTs: 1 }, 2) : "",
+      hostileDlmm.type === "dlmm" ? removePickMessage(hostileDlmm, hostileSide, null) : "",
+      hostileDlmm.type === "dlmm" ? removePickMessage({ ...hostileDlmm, lowerBinId: 0, upperBinId: 5, activeBinId: 2 }, null, { ...hostileSide, amountIsSideTotal: true }) : "",
+      hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, hostileSide) : "",
+      hostileDlmm.type === "dlmm" ? removeAmountMessage(hostileDlmm, null) : "",
       errorMessage(HOSTILE, HOSTILE),
       swapFormMessage(hostileSwap, "5"),
       swapFormMessage({ ...hostileSwap, token: undefined, amount: undefined }, undefined),
@@ -347,6 +358,36 @@ describe("messages", () => {
       expect(() => assertTelegramHtml(html)).not.toThrow();
       expect(html).not.toContain(HOSTILE);
     }
+  });
+
+  it("renders a flip confirm with token, amount, range, bins, and the atomic note", () => {
+    const action: PendingAction = {
+      kind: "dlmmFlip",
+      vault: VAULT,
+      position: "P",
+      pairLabel: "SOL/USDC",
+      token: { mint: "So1", symbol: "SOL", decimals: 9 },
+      bins: { side: "above", lowerBinId: -99, upperBinId: -90, priceRange: { low: "150.15", high: "151.5068" } },
+      activeBinId: -100,
+      amountBaseUnits: "400000000",
+      amountIsSideTotal: false,
+    };
+    expect(confirmMessage(vaultSummary, action)).toBe(
+      [
+        "🧾 <b>Review</b> · Demo",
+        "━━━━━━━━━━━━",
+        "<b>Flip SOL to Bid-Ask in SOL/USDC LP</b>",
+        "├ Token <b>SOL</b>",
+        "├ Amount ≈ 0.4 SOL",
+        "├ Range 150.15 → 151.5068",
+        "└ Bins 10 · above the price",
+        "━━━━━━━━━━━━",
+        "<i>One atomic transaction: withdraws all SOL from these bins and re-adds it to the same bins as Bid-Ask.</i>",
+        "<i>If the price moves more than 10 bins first, it fails and nothing changes.</i>",
+        "<i>Does not claim fees. Use 💰 Claim fees for those.</i>",
+        "<blockquote>⚡ Real mainnet transaction from the vault. Cannot be undone.</blockquote>",
+      ].join("\n"),
+    );
   });
 
   it("lists each transaction once at its latest state", () => {
@@ -529,5 +570,6 @@ describe("messages", () => {
     expect(errorHint("Forbidden", "Manager is not the current vault authority", "read")).toBeUndefined();
     expect(errorHint("PhoenixAlreadyOnboarded")).toBe("The vault's Phoenix trader is already onboarded. Open 📈 Phoenix again to deposit and trade.");
     expect(errorHint("VaultHasOpenStrategies")).toBe("Strategies are still open. Close every strategy first.");
+    expect(errorHint("Stale")).toBe("The pool price moved since the bot read it, so this step was not sent. Refresh and try again.");
   });
 });
