@@ -171,7 +171,7 @@ export const HELP_MESSAGE = [
   "",
   "Add your manager wallet under 👛 <b>Wallet</b> (import its private key, or create a new one), add the API key an admin issued for it, then tap <b>Vaults</b>.",
   "",
-  "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, then tap 🟢 Buy or 🔴 Sell with a share, or ✏️ to type an amount (\"1.5\", \"25%\", \"max\").",
+  "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, tap 🟢 Buy or 🔴 Sell, then a share or ✏️ to type an amount (\"1.5\", \"25%\", \"max\").",
   "<b>LP</b> · Vault → ➕ New LP. Paste a pool or search by symbol, pick a side, shape, and range, and size each token.",
   "",
   "<b>Commands</b>",
@@ -894,21 +894,43 @@ export function swapPickerMessage(form: SwapForm, balancesBaseUnits: string[]): 
   return lines.join("\n");
 }
 
-export function swapCardMessage(deposit: TokenRef, token: PickedToken, tokenBalanceBaseUnits: string, depositBalanceBaseUnits: string, slippageBps: number): string {
+export function swapCardMessage(deposit: TokenRef, token: PickedToken, tokenBalanceBaseUnits: string, depositBalanceBaseUnits: string): string {
   const lines = [`💱 ${tokenLabel(token)}`];
   if (needsWarning(token)) lines.push(`⚠️ <i>${token.verified === false ? "Not verified by Jupiter." : "Verification unavailable."} Double-check the address.</i>`);
   lines.push(
     "",
-    `Vault holds <b>${amount(tokenBalanceBaseUnits, token.decimals, token.symbol)}</b>`,
+    `Vault has <b>${amount(tokenBalanceBaseUnits, token.decimals, token.symbol)}</b>`,
     `Vault has <b>${amount(depositBalanceBaseUnits, deposit.decimals, deposit.symbol)}</b> to buy with`,
-    "",
   );
-  if (depositBalanceBaseUnits === "0") lines.push(`<i>No ${escapeHtml(deposit.symbol)} to buy with.</i>`);
-  else lines.push(`<i>🟢 Buy % spends that share of the vault's ${escapeHtml(deposit.symbol)}.</i>`);
-  if (tokenBalanceBaseUnits === "0") lines.push(`<i>Nothing to sell: the vault holds no ${escapeHtml(token.symbol)}.</i>`);
-  else lines.push(`<i>🔴 Sell % sells that share of its ${escapeHtml(token.symbol)}.</i>`);
-  lines.push(`Slippage ${slippageBps / 100}%`);
+  if (depositBalanceBaseUnits === "0") lines.push("", `<i>No ${escapeHtml(deposit.symbol)} to buy with.</i>`);
+  if (tokenBalanceBaseUnits === "0") lines.push("", `<i>Nothing to sell: the vault holds no ${escapeHtml(token.symbol)}.</i>`);
   return lines.join("\n");
+}
+
+/** What each amount preset spends, so the buttons can stay short. */
+export function swapAmountMessage(
+  side: "buy" | "sell",
+  { input, output }: { input: TokenRef; output: TokenRef },
+  balanceBaseUnits: string,
+  presetsBps: readonly number[],
+  slippageBps: number,
+): string {
+  const title = side === "buy" ? `🟢 <b>Buy ${escapeHtml(output.symbol)} with ${escapeHtml(input.symbol)}</b>` : `🔴 <b>Sell ${escapeHtml(input.symbol)} for ${escapeHtml(output.symbol)}</b>`;
+  const balance = BigInt(balanceBaseUnits);
+  const lines = [title, `Vault has <b>${amount(balanceBaseUnits, input.decimals, input.symbol)}</b>`, ""];
+  for (const bps of presetsBps) {
+    lines.push(`${bps === 10_000 ? "Max" : `${bps / 100}%`} = ${amount(((balance * BigInt(bps)) / 10_000n).toString(), input.decimals, input.symbol)}`);
+  }
+  lines.push("", `Slippage ${slippageBps / 100}%`);
+  return lines.join("\n");
+}
+
+export function swapSlippageMessage(slippageBps: number): string {
+  return [
+    `⚙️ <b>Slippage</b> · now ${slippageBps / 100}%`,
+    "",
+    "<i>How far the price may move against a swap before it is refused. Higher lets more swaps through, at a possibly worse price. The protocol allows up to 3%.</i>",
+  ].join("\n");
 }
 
 export function swapQuoteMessage(form: SwapForm, tokens: { input: TokenRef; output: TokenRef }, amountBaseUnits: string, quote: Quote): string {

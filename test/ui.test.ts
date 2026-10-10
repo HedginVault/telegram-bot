@@ -25,11 +25,11 @@ const ops: FormOp[] = [
   { op: "reduceOnly" },
   { op: "usdc" },
   { op: "ask", field: "minWithdrawalShares" },
-  { op: "ask", field: "buyAmount" },
-  { op: "ask", field: "sellAmount" },
-  { op: "trade", side: "buy", bps: 2500 },
-  { op: "trade", side: "sell", bps: 10_000 },
   { op: "pickToken" },
+  { op: "buy" },
+  { op: "sell" },
+  { op: "slipMenu" },
+  { op: "back" },
 ];
 const screens: Screen[] = [
   { kind: "vaults" },

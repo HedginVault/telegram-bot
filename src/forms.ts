@@ -10,7 +10,7 @@ import {
   parseUnits,
 } from "@hedginvault/sdk";
 import type { PendingAction, VaultChanges } from "./actions";
-import { lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapCardMessage, swapPickerMessage, swapQuoteMessage, trackFormMessage, vaultFormMessage } from "./messages";
+import { lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapAmountMessage, swapCardMessage, swapPickerMessage, swapQuoteMessage, swapSlippageMessage, trackFormMessage, vaultFormMessage } from "./messages";
 import {
   type Button,
   type FormOp,
@@ -34,8 +34,7 @@ export const MAX_SLIPPAGE_BPS = 300;
 export const SLIPPAGE_PRESETS = [50, 100, 300] as const;
 /** Held tokens the swap picker offers: with 📋 Paste CA, three full rows of three. */
 const SWAP_PICKER_TOKENS = 8;
-const SWAP_BUY_PRESETS = [2500, 5000] as const;
-const SWAP_SELL_PRESETS = [5000, 10_000] as const;
+const SWAP_AMOUNT_PRESETS = [2500, 5000, 10_000] as const;
 export const SHAPES: readonly DlmmShape[] = ["spot", "curve", "bidAsk"];
 /** Which tokens a new position holds: x only (range above the price), both, or y only (below). Button order. */
 export const LP_SIDES = ["x", "both", "y"] as const;
@@ -72,12 +71,16 @@ export interface SwapForm {
   kind: "swap";
   vault: string;
   deposit: TokenRef;
-  /** Unset: the bot shows the token picker. Set: the token card with its buy and sell buttons. */
+  /**
+   * The screen follows from these: no token → picker; token, no side → card (choose buy or sell);
+   * token and side → amount screen. `slippageOpen` shows the slippage screen over the card.
+   */
   token?: PickedToken;
-  /** Set by the card's buy or sell button for the quote it opens. buy: deposit token → `token`; sell: `token` → deposit token. */
-  side: "buy" | "sell";
+  /** buy: deposit token → `token`; sell: `token` → deposit token. */
+  side?: "buy" | "sell";
   amount?: AmountInput;
   slippageBps: number;
+  slippageOpen?: boolean;
   /** Non-deposit tokens the vault held when the form opened, offered in the picker. */
   held: PickedToken[];
 }
@@ -323,7 +326,7 @@ export function amountsInRange(bins: readonly BinAmounts[], range: InclusiveBinR
 export const BASE58_ADDRESS = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 export function swapTokens(form: SwapForm): { input: TokenRef; output: TokenRef } | undefined {
-  if (!form.token) return undefined;
+  if (!form.token || !form.side) return undefined;
   return form.side === "buy" ? { input: form.deposit, output: form.token } : { input: form.token, output: form.deposit };
 }
 
@@ -358,7 +361,7 @@ export async function createSwapForm(api: HedgeClient, vault: string): Promise<S
     .filter((t) => t.token.mint !== deposit.mint)
     .slice(0, SWAP_PICKER_TOKENS)
     .map((t) => ({ ...tokenRef(t.token), pasted: false, verified: null }));
-  return { kind: "swap", vault, deposit, side: "buy", slippageBps: SLIPPAGE_PRESETS[0], held };
+  return { kind: "swap", vault, deposit, slippageBps: SLIPPAGE_PRESETS[0], held };
 }
 
 export async function createPhoenixTransferForm(api: HedgeClient, vault: string, direction: PhoenixTransferForm["direction"]): Promise<PhoenixTransferForm> {
@@ -484,8 +487,6 @@ const PROMPTS: Record<TextField, string> = {
   depositCap: 'Send the most the vault may hold, in deposit tokens, e.g. "100000". Send "none" for no cap.',
   minDeposit: 'Send the smallest deposit allowed, in deposit tokens, e.g. "10".',
   minWithdrawalShares: 'Send the fewest shares a withdrawal may redeem, e.g. "1".',
-  buyAmount: '🟢 How much of the deposit token should the vault spend? Send an amount like "100", a share like "25%", or "max".',
-  sellAmount: '🔴 How much of the token should the vault sell? Send an amount like "1.5", a share like "25%", or "max".',
 };
 
 function getForm(deps: FormDeps, formId: string): Form {
@@ -560,14 +561,27 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
       }
       case "pickToken":
         form.token = undefined;
+        form.side = undefined;
         return show;
-      case "trade":
+      case "buy":
+      case "sell":
         if (!form.token) throw expired();
-        form.side = op.side;
+        form.side = op.op;
+        return show;
+      case "share":
+        if (!form.side) throw expired();
         form.amount = { kind: "share", bps: op.bps };
         return { kind: "show", screen: { kind: "swapQuote", formId } };
+      case "slipMenu":
+        form.slippageOpen = true;
+        return show;
       case "slippage":
         form.slippageBps = op.bps;
+        form.slippageOpen = false;
+        return show;
+      case "back":
+        if (form.slippageOpen) form.slippageOpen = false;
+        else form.side = undefined;
         return show;
       default:
         throw expired();
@@ -713,10 +727,7 @@ export async function applyFormText(formId: string, field: TextField, text: stri
         form.token = { ...tokenRef(detail), pasted: true, verified: detail.verified };
         return;
       }
-      case "buyAmount":
-      case "sellAmount": {
-        if (!form.token) throw expired();
-        form.side = field === "buyAmount" ? "buy" : "sell";
+      case "amount": {
         const { input } = swapTokens(form) ?? {};
         if (!input) throw expired();
         const amount = parseAmountInput(text, input.decimals);
@@ -727,6 +738,7 @@ export async function applyFormText(formId: string, field: TextField, text: stri
       }
       case "slippage":
         form.slippageBps = parseSlippage(text);
+        form.slippageOpen = false;
         return;
       default:
         throw expired();
@@ -964,23 +976,35 @@ function renderTrackForm(formId: string, form: TrackForm): RenderedScreen {
 
 function renderSwapForm(formId: string, form: SwapForm, vault: VaultDetail, deps: FormDeps): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
-  const back = button("⬅️ Vault", { kind: "vault", vault: form.vault });
-  const slippageRow = SLIPPAGE_PRESETS.map((bps) => op(`Slip ${bps / 100}%`, { op: "slippage", bps }));
+  const toVault = button("⬅️ Vault", { kind: "vault", vault: form.vault });
+  const back = op("⬅️ Back", { op: "back" });
   if (!form.token) {
     const balances = form.held.map((token) => idleBalanceOf(vault, token.mint));
     // Three buttons per row at most: Telegram cuts labels short on phones past that.
     const rows = rowsOf([...form.held.map((token, index) => op(token.symbol, { op: "token", index })), op("📋 Paste CA", { op: "ask", field: "token" })], 3);
-    return { html: swapPickerMessage(form, balances), keyboard: keyboard([...rows, [back]]) };
+    return { html: swapPickerMessage(form, balances), keyboard: keyboard([...rows, [toVault]]) };
+  }
+  if (form.slippageOpen) {
+    const presets = SLIPPAGE_PRESETS.map((bps) => op(`${form.slippageBps === bps ? "✓ " : ""}${bps / 100}%`, { op: "slippage", bps }));
+    return { html: swapSlippageMessage(form.slippageBps), keyboard: keyboard([presets, [op("✏️ Type", { op: "ask", field: "slippage" }), back]]) };
+  }
+  const tokens = swapTokens(form);
+  if (form.side && tokens) {
+    const balance = idleBalanceOf(vault, tokens.input.mint);
+    const presets = SWAP_AMOUNT_PRESETS.map((bps) => op(bps === 10_000 ? "Max" : `${bps / 100}%`, { op: "share", bps }));
+    return {
+      html: swapAmountMessage(form.side, tokens, balance, SWAP_AMOUNT_PRESETS, form.slippageBps),
+      keyboard: keyboard([presets, [op("✏️ Type amount", { op: "ask", field: "amount" }), back]]),
+    };
   }
   const tokenBalance = idleBalanceOf(vault, form.token.mint);
   const depositBalance = idleBalanceOf(vault, form.deposit.mint);
-  const trade = (side: "buy" | "sell", bps: number) =>
-    op(`${side === "buy" ? "🟢 Buy" : "🔴 Sell"} ${bps === 10_000 ? "all" : `${bps / 100}%`}`, { op: "trade", side, bps });
-  const rows: Button[][] = [];
-  if (depositBalance !== "0") rows.push([...SWAP_BUY_PRESETS.map((bps) => trade("buy", bps)), op("🟢 Buy ✏️", { op: "ask", field: "buyAmount" })]);
-  if (tokenBalance !== "0") rows.push([...SWAP_SELL_PRESETS.map((bps) => trade("sell", bps)), op("🔴 Sell ✏️", { op: "ask", field: "sellAmount" })]);
-  rows.push(slippageRow, [op("✏️ Slippage", { op: "ask", field: "slippage" }), op("🔄 Other token", { op: "pickToken" })], [back]);
-  return { html: swapCardMessage(form.deposit, form.token, tokenBalance, depositBalance, form.slippageBps), keyboard: keyboard(rows) };
+  const sides = [
+    ...(depositBalance === "0" ? [] : [op(`🟢 Buy ${form.token.symbol}`, { op: "buy" })]),
+    ...(tokenBalance === "0" ? [] : [op(`🔴 Sell ${form.token.symbol}`, { op: "sell" })]),
+  ];
+  const rows: Button[][] = [...(sides.length ? [sides] : []), [op(`⚙️ Slippage ${form.slippageBps / 100}%`, { op: "slipMenu" }), op("🔄 Other token", { op: "pickToken" })], [toVault]];
+  return { html: swapCardMessage(form.deposit, form.token, tokenBalance, depositBalance), keyboard: keyboard(rows) };
 }
 
 /** Share-of-balance shortcuts in the LP amount picker. */
