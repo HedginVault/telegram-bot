@@ -29,7 +29,7 @@ export const holdings: Holdings = {
 };
 
 export const strategies: Strategy[] = [
-  { type: "jupiter", address: "Strat1", symbol: "SOL", decimals: 9, vaultBalance: "10000000" },
+  { type: "jupiter", address: "Strat1", targetMint: SOL, symbol: "SOL", decimals: 9, vaultBalance: "10000000" },
   {
     type: "dlmm",
     address: "Strat2",

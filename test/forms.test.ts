@@ -195,6 +195,7 @@ describe("toActionRequest", () => {
     ],
     [{ kind: "phoenixCancel", vault: VAULT, symbol: "SOL" }, { action: "phoenix/cancel", vault: VAULT, symbol: "SOL", orders: "all" }],
     [{ kind: "phoenixSweep", vault: VAULT }, { action: "phoenix/sweep", vault: VAULT }],
+    [{ kind: "jupiterSweep", vault: VAULT, mint: "M", symbol: "M", depositSymbol: "USDC" }, { action: "jupiter/sweep", vault: VAULT, mint: "M", slippageBps: 100 }],
     [
       { kind: "vaultCreate", name: "A", deposit: usdc, performanceFeeBps: 1, managementFeeBps: 2, depositCap: "3", minDeposit: "4", minWithdrawalShares: "5" },
       { action: "vault/initialize", name: "A", depositMint: USDC, performanceFeeBps: 1, managementFeeBps: 2, depositCap: "3", minDeposit: "4", minWithdrawalShares: "5" },

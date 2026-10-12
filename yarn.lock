@@ -137,9 +137,9 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz#b21affb804cc167c133d95f45b3a1dc1323b9a87"
   integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
 
-"@hedginvault/sdk@file:./vendor/hedginvault-sdk-77a24e08e3ea.tgz":
+"@hedginvault/sdk@file:./vendor/hedginvault-sdk-d5cfc48837a0.tgz":
   version "0.1.0"
-  resolved "file:./vendor/hedginvault-sdk-77a24e08e3ea.tgz#e949d4fa3dbd271d99acedb651915eb6b8a66280"
+  resolved "file:./vendor/hedginvault-sdk-d5cfc48837a0.tgz#e6917f0353b7a008732f159019d650a68d21ea14"
   dependencies:
     bs58 "4.0.1"
     zod "^3.23"

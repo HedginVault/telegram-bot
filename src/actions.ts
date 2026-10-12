@@ -4,6 +4,7 @@ import type { TokenRef } from "./ui";
 export const REMOVE_BPS = [2500, 5000, 10_000] as const;
 export type RemoveBps = (typeof REMOVE_BPS)[number];
 // Zap-out chains remove, claim, and a swap back to the deposit token, so it gets more room than a swap.
+// A sell-all sweep uses it too: it is the same leftover-token sale a zap-out continues into.
 export const ZAP_OUT_SLIPPAGE_BPS = 100;
 // Bins the active price may move between building and landing before an add or flip is rejected.
 export const MAX_ACTIVE_BIN_SLIPPAGE = 10;
@@ -83,7 +84,8 @@ export type PendingAction =
       amountBaseUnits: string;
       amountIsSideTotal: boolean;
     }
-  | { kind: "dlmmZapOut"; vault: string; position: string; pairLabel: string; depositSymbol: string }
+  /** `otherSymbol` is the pair's non-deposit token, which the API may sweep after the position closes. */
+  | { kind: "dlmmZapOut"; vault: string; position: string; pairLabel: string; depositSymbol: string; otherSymbol: string }
   | { kind: "dlmmAdd"; vault: string; position: string; pairLabel: string; liquidity: Liquidity }
   | {
       kind: "dlmmOpen";
@@ -109,6 +111,8 @@ export type PendingAction =
     }
   | { kind: "dlmmClose"; vault: string; position: string; pairLabel: string }
   | { kind: "closeStrategy"; vault: string; strategy: string; label: string }
+  /** Sells the vault's whole balance of a Jupiter-held token to the deposit token and closes its strategy. */
+  | { kind: "jupiterSweep"; vault: string; mint: string; symbol: string; depositSymbol: string }
   | { kind: "jupiterInit"; vault: string; token: TokenRef; verified: boolean | null }
   | { kind: "phoenixInit"; vault: string }
   /** Not a builder: runs `onboardPhoenix`, which Phoenix co-signs. */
@@ -176,6 +180,8 @@ export function toActionRequest(action: Exclude<PendingAction, { kind: "phoenixO
       return { action: "dlmm/zap-out", vault: action.vault, position: action.position, slippageBps: ZAP_OUT_SLIPPAGE_BPS };
     case "closeStrategy":
       return { action: "strategy/close", vault: action.vault, strategy: action.strategy };
+    case "jupiterSweep":
+      return { action: "jupiter/sweep", vault: action.vault, mint: action.mint, slippageBps: ZAP_OUT_SLIPPAGE_BPS };
     case "dlmmAdd":
       return {
         action: "dlmm/add",

@@ -73,10 +73,11 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | DLMM position | 💰 Claim fees | `dlmm/claim-fee` |
 | DLMM position → ➖ Remove liquidity | Bins (🧺 All, ⬆️ Above price only, ⬇️ Below price only, or ⏫ Top / ⏬ Bottom 25% or 50% of the position's bins; picks with no liquidity are not offered, and without per-bin data only All is) · 25% / 50% / 100% | `dlmm/remove`, with the picked inclusive `lowerBinId`/`upperBinId` |
 | DLMM position | 🔁 Flip TOKEN to Bid-Ask: every bin of the non-deposit token (above the price for X, below for Y), withdrawn and re-added as Bid-Ask in one atomic transaction; fails unchanged if the price moves over 10 bins; does not claim fees; when not offered, the position card says why (no bin data, or none of that token on its side of the price) | `dlmm/flip` |
-| DLMM position | 🔁 Zap out | `dlmm/zap-out` (+ `dlmm/zap-out/swap` continuations), 100 bps |
+| DLMM position | 🔁 Zap out; afterwards any leftover non-deposit token is sold to the deposit token and its swap strategy closed in one extra transaction, unless another open position or order still uses it | `dlmm/zap-out` (+ `dlmm/zap-out/swap` and `jupiter/sweep` continuations), 100 bps |
 | DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
 | Vault → ➕ New LP | Pool · range (up to 70 bins) · 🫙 Empty position | `dlmm/initialize` |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
+| Strategies | 🧹 Sell all TOKEN & close, on each swap strategy holding a non-deposit token: sells the whole balance to the deposit token and closes the strategy (rent back to the manager) in one transaction; refused while an open LP position or order uses the token | `jupiter/sweep`, 100 bps |
 | Strategies → ➕ Track token | A pasted contract address (Jupiter verification shown) | `jupiter/initialize` |
 | Vault → 📈 Phoenix | 🚀 Set up Phoenix (shown when the vault has no Phoenix strategy) | `phoenix/initialize` |
 | Vault → 📈 Phoenix | 🤝 Onboard trader (shown after setup) | `onboardPhoenix` (`phoenix/onboard`) |
@@ -151,7 +152,8 @@ missing action so the manager can ask the admin for it.
 | Empty position | `dlmm/initialize` |
 | Add liquidity · claim fees · remove | `dlmm/add` (+ `dlmm/add-range`), `dlmm/claim-fee`, `dlmm/remove` |
 | Flip to Bid-Ask | `dlmm/flip` |
-| Zap out | `dlmm/zap-out`, `dlmm/zap-out/swap` |
+| Zap out | `dlmm/zap-out`, `dlmm/zap-out/swap`, `jupiter/sweep` |
+| Sell all & close | `jupiter/sweep` |
 | Close position · close empty strategy | `dlmm/close`, `strategy/close` |
 | Phoenix setup | `phoenix/initialize`, then `phoenix/onboard` |
 | Phoenix funds and trading | `phoenix/deposit`, `phoenix/withdraw`, `phoenix/order`, `phoenix/cancel`, `phoenix/sweep` |

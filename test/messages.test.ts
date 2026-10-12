@@ -39,7 +39,7 @@ import { assertTelegramHtml } from "./telegram-html";
 const HOSTILE = `<b>&"x"</b>`;
 const hostileVault: VaultSummary = { ...vaultSummary, name: HOSTILE, depositSymbol: HOSTILE, status: HOSTILE };
 const hostileStrategies: Strategy[] = [
-  { type: "jupiter", address: "S1", symbol: HOSTILE, decimals: 0, vaultBalance: "1" },
+  { type: "jupiter", address: "S1", targetMint: "M", symbol: HOSTILE, decimals: 0, vaultBalance: "1" },
   { type: "unreadable", address: HOSTILE, protocol: HOSTILE, reason: HOSTILE },
 ];
 
@@ -121,7 +121,8 @@ const hostileActions: PendingAction[] = [
   { kind: "dlmmRemove", vault: VAULT, position: "P", pairLabel: HOSTILE, bps: 2500, bins: hostileRange },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide },
   { kind: "dlmmFlip", vault: VAULT, position: "P", pairLabel: HOSTILE, ...hostileSide, amountIsSideTotal: true },
-  { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE },
+  { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: HOSTILE, depositSymbol: HOSTILE, otherSymbol: HOSTILE },
+  { kind: "jupiterSweep", vault: VAULT, mint: "M", symbol: HOSTILE, depositSymbol: HOSTILE },
   { kind: "dlmmInit", vault: VAULT, lbPair: "P", pairLabel: HOSTILE, lowerBinId: 0, upperBinId: 5, priceRange: { low: HOSTILE, high: HOSTILE } },
   { kind: "dlmmClose", vault: VAULT, position: "P", pairLabel: HOSTILE },
   { kind: "jupiterInit", vault: VAULT, token: { ...hostileToken, mint: HOSTILE }, verified: false },
@@ -259,7 +260,7 @@ describe("messages", () => {
   });
 
   it("groups strategies by kind", () => {
-    expect(strategiesMessage(vaultSummary, [...strategies, { type: "jupiter", address: "S5", symbol: "MET", decimals: 6, vaultBalance: "0" }])).toBe(
+    expect(strategiesMessage(vaultSummary, [...strategies, { type: "jupiter", address: "S5", targetMint: "M", symbol: "MET", decimals: 6, vaultBalance: "0" }])).toBe(
       [
         "🧩 <b>Demo</b> · strategies (5)",
         "",
@@ -425,8 +426,24 @@ describe("messages", () => {
     );
   });
 
+  it("says a zap-out also sweeps the leftover non-deposit token", () => {
+    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC", otherSymbol: "SOL" };
+    expect(confirmMessage(vaultSummary, action)).toContain(
+      "After the position closes, any SOL left in the vault is also swapped to USDC and its SOL swap strategy is closed, in one extra transaction. This is skipped while another open LP position or order still uses SOL.",
+    );
+  });
+
+  it("renders a sell-all sweep confirm", () => {
+    const action: PendingAction = { kind: "jupiterSweep", vault: VAULT, mint: "So1", symbol: "SOL", depositSymbol: "USDC" };
+    const html = confirmMessage(vaultSummary, action);
+    expect(html).toContain("<b>Sell all SOL to USDC and close its strategy</b>");
+    expect(html).toContain("Slippage 1%");
+    expect(html).toContain("swaps the vault's whole SOL balance to USDC through Jupiter, then closes the SOL strategy and returns its rent to your wallet.");
+    expect(html).toContain("Refused while an open LP position or order still uses SOL.");
+  });
+
   it("lists each transaction once at its latest state", () => {
-    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC" };
+    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC", otherSymbol: "SOL" };
     const html = executionMessage(action, [
       { kind: "building", action: "dlmm/zap-out" },
       { kind: "sent", signature: "sigA", status: "pending" },
@@ -445,7 +462,7 @@ describe("messages", () => {
   });
 
   it("collapses a successful action to a single done line", () => {
-    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC" };
+    const action: PendingAction = { kind: "dlmmZapOut", vault: VAULT, position: "P", pairLabel: "SOL/USDC", depositSymbol: "USDC", otherSymbol: "SOL" };
     const progress = [
       { kind: "building", action: "dlmm/zap-out" },
       { kind: "sent", signature: "sigA", status: "pending" },

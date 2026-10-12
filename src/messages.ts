@@ -14,7 +14,7 @@ import {
   type VaultStatus,
   type VaultSummary,
 } from "@hedginvault/sdk";
-import { type Liquidity, MAX_ACTIVE_BIN_SLIPPAGE, type PendingAction, type RangeBins, type SideBins, type SideLiquidity, type VaultChanges } from "./actions";
+import { type Liquidity, MAX_ACTIVE_BIN_SLIPPAGE, ZAP_OUT_SLIPPAGE_BPS, type PendingAction, type RangeBins, type SideBins, type SideLiquidity, type VaultChanges } from "./actions";
 import {
   type AmountInput,
   type LpForm,
@@ -625,6 +625,8 @@ export function actionTitle(action: PendingAction): string {
       return `Zap out the ${escapeHtml(action.pairLabel)} position to ${escapeHtml(action.depositSymbol)}`;
     case "closeStrategy":
       return `Close the empty ${escapeHtml(action.label)}`;
+    case "jupiterSweep":
+      return `Sell all ${escapeHtml(action.symbol)} to ${escapeHtml(action.depositSymbol)} and close its strategy`;
     case "dlmmAdd":
       return `Add ${liquidityAmounts(action.liquidity)} to the ${escapeHtml(action.pairLabel)} position`;
     case "dlmmOpen":
@@ -752,9 +754,24 @@ function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
       );
       break;
     }
-    case "dlmmZapOut":
-      r.notes.push("Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.");
+    case "dlmmZapOut": {
+      const other = escapeHtml(action.otherSymbol);
+      const deposit = escapeHtml(action.depositSymbol);
+      r.notes.push(
+        "Removes all liquidity, claims fees, swaps to the deposit token, and closes the position. Large positions take several transactions.",
+        `After the position closes, any ${other} left in the vault is also swapped to ${deposit} and its ${other} swap strategy is closed, in one extra transaction. This is skipped while another open LP position or order still uses ${other}.`,
+      );
       break;
+    }
+    case "jupiterSweep": {
+      const symbol = escapeHtml(action.symbol);
+      r.notes.push(
+        `One transaction: swaps the vault's whole ${symbol} balance to ${escapeHtml(action.depositSymbol)} through Jupiter, then closes the ${symbol} strategy and returns its rent to your wallet.`,
+        `Refused while an open LP position or order still uses ${symbol}. Close those first.`,
+      );
+      r.rows.push(`Slippage ${ZAP_OUT_SLIPPAGE_BPS / 100}%`);
+      break;
+    }
     case "dlmmClose":
       r.warnings.push("⚠️ This removes all of the position's liquidity, claims its fees back to the vault, and closes it. Large positions take several transactions.");
       break;

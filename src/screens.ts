@@ -293,6 +293,10 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
           const action: PendingAction = { kind: "closeStrategy", vault: vault.address, strategy: strategy.address, label: `${strategy.symbol} swap strategy` };
           return [[confirmButton(deps, `🗑 Close empty ${strategy.symbol} strategy`, action)]];
         }
+        if (strategy.type === "jupiter" && strategy.targetMint !== vault.depositMint) {
+          const action: PendingAction = { kind: "jupiterSweep", vault: vault.address, mint: strategy.targetMint, symbol: strategy.symbol, depositSymbol: vault.depositSymbol };
+          return [[confirmButton(deps, `🧹 Sell all ${strategy.symbol} & close`, action)]];
+        }
         return [];
       });
       return {
@@ -309,6 +313,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       const { vault, strategy } = await findPosition(deps, screen.refId);
       const back = button("⬅️ Strategies", { kind: "strategies", vault: vault.address });
       const base = { vault: vault.address, position: strategy.position, pairLabel: pairLabel(strategy) };
+      const otherSymbol = (strategy.tokenX.mint === vault.depositMint ? strategy.tokenY : strategy.tokenX).symbol;
       const rows: Button[][] = [[confirmButton(deps, "💰 Claim fees", { kind: "dlmmClaim", ...base })]];
       if (strategy.lbPair) rows.push([button("➕ Add liquidity", { kind: "addLp", refId: screen.refId })]);
       rows.push([button("➖ Remove liquidity", { kind: "removeLp", refId: screen.refId })]);
@@ -317,7 +322,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
       const flip = sideLiquidity(strategy, flipBins);
       if (flip) rows.push([confirmButton(deps, `🔁 Flip ${flip.token.symbol} to Bid-Ask`, { kind: "dlmmFlip", ...base, ...flip })]);
       rows.push(
-        [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol })],
+        [confirmButton(deps, `🔁 Zap out to ${vault.depositSymbol}`, { kind: "dlmmZapOut", ...base, depositSymbol: vault.depositSymbol, otherSymbol })],
         [confirmButton(deps, "🗑 Close position", { kind: "dlmmClose", ...base })],
         [button("🔄 Refresh", screen), back],
       );

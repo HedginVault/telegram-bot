@@ -718,7 +718,7 @@ describe("trading", () => {
 
   it("offers to close an empty swap strategy", async () => {
     const { send, click, api, settle } = setup(
-      { ...tradingApi(), getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratJup", symbol: "BONK", decimals: 5, vaultBalance: "0" }]) }
+      { ...tradingApi(), getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratJup", targetMint: "Bonk111", symbol: "BONK", decimals: 5, vaultBalance: "0" }]) }
     );
     await send("/start");
     await click("1. Demo");
@@ -727,6 +727,28 @@ describe("trading", () => {
     await click("✅ Confirm & send");
     await settle();
     expect(api.build).toHaveBeenCalledWith("strategy/close", { vault: VAULT, strategy: "StratJup" });
+  });
+
+  it("sells all of a held Jupiter token and closes its strategy", async () => {
+    const { send, click, api, settle } = setup(tradingApi());
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    await click("🧹 Sell all SOL & close");
+    await click("✅ Confirm & send");
+    await settle();
+    expect(api.build).toHaveBeenCalledWith("jupiter/sweep", { vault: VAULT, mint: SOL, slippageBps: 100 });
+  });
+
+  it("offers no sell-all for a strategy on the deposit token", async () => {
+    const { send, click, buttons } = setup({
+      ...tradingApi(),
+      getStrategies: vi.fn(async () => [{ type: "jupiter" as const, address: "StratUsdc", targetMint: USDC, symbol: "USDC", decimals: 6, vaultBalance: "5" }]),
+    });
+    await send("/start");
+    await click("1. Demo");
+    await click("🧩 Strategies");
+    expect(buttons().some((b) => b.text.startsWith("🧹"))).toBe(false);
   });
 
   it("explains a redacted Jupiter route failure in plain words", async () => {
