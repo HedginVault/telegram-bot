@@ -1,4 +1,4 @@
-import { createHedgeClient } from "@hedginvault/sdk";
+import { createHedgeClient } from "@hedginxyz/sdk";
 import { createBot } from "./bot";
 import { loadConfig } from "./config";
 import { createWalletStore } from "./wallets";

@@ -8,7 +8,7 @@ import {
   type HedgeClient,
   executeBuild,
   toBuildRequest,
-} from "@hedginvault/sdk";
+} from "@hedginxyz/sdk";
 import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, VersionedTransaction } from "@solana/web3.js";
 import bs58 from "bs58";
 import { randomBytes } from "node:crypto";

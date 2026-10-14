@@ -120,12 +120,9 @@ Stored keys control real funds on mainnet. Never commit `data/`, `.env`, or a ba
 
 ## SDK
 
-API calls, transaction inspection, signing, and execution come from `@hedginvault/sdk` in
-the sibling `sdk/` repository. The bot installs it from `vendor/hedginvault-sdk.tgz` so it
-builds without the sibling checkout. After changing the SDK, run `yarn sdk:update` and
-commit the new tarball, `package.json`, and `yarn.lock`. The tarball name carries a content
-hash because Yarn 1 caches `file:` tarballs by name and version and would otherwise keep
-installing the old build.
+API calls, transaction inspection, signing, and execution come from
+[`@hedginxyz/sdk`](https://www.npmjs.com/package/@hedginxyz/sdk) on npm. To pick up a new SDK
+release, run `yarn upgrade @hedginxyz/sdk@^<version>` and commit `package.json` and `yarn.lock`.
 
 The API checker moved to the SDK: run `hedge-check-api` there.
 

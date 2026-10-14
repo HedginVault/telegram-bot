@@ -1,4 +1,4 @@
-import type { ActionRequest, DlmmShape, ExecuteOptions, HedgeClient, Outcome, TransactionSigner } from "@hedginvault/sdk";
+import type { ActionRequest, DlmmShape, ExecuteOptions, HedgeClient, Outcome, TransactionSigner } from "@hedginxyz/sdk";
 import type { TokenRef } from "./ui";
 
 export const REMOVE_BPS = [2500, 5000, 10_000] as const;

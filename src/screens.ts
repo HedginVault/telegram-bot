@@ -1,4 +1,4 @@
-import { type HedgeClient, type InclusiveBinRange, type Strategy, type VaultStatus, type VaultSummary, binPrice, flipRange, flipSide } from "@hedginvault/sdk";
+import { type HedgeClient, type InclusiveBinRange, type Strategy, type VaultStatus, type VaultSummary, binPrice, flipRange, flipSide } from "@hedginxyz/sdk";
 import { type PendingAction, REMOVE_BPS, type RangeBins, type RemoveBps, type SideBins, type SideLiquidity, actionVault } from "./actions";
 import {
   type Form,

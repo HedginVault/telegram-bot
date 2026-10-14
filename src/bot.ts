@@ -1,4 +1,4 @@
-import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary, keypairSigner } from "@hedginvault/sdk";
+import { ApiError, type HedgeClient, type Outcome, type Progress, type TransactionSigner, type VaultSummary, keypairSigner } from "@hedginxyz/sdk";
 import { type Context, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery, message } from "telegraf/filters";
 import { type PendingAction, actionScope, actionVault, executeAction } from "./actions";

@@ -1,7 +1,6 @@
 FROM node:22-slim AS build
 WORKDIR /bot
 COPY package.json yarn.lock ./
-COPY vendor ./vendor
 RUN yarn install --frozen-lockfile
 COPY tsconfig.json ./
 COPY src ./src

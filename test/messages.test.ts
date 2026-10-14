@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Strategy, VaultSummary } from "@hedginvault/sdk";
+import type { Strategy, VaultSummary } from "@hedginxyz/sdk";
 import type { PendingAction } from "../src/actions";
 import {
   HELP_MESSAGE,
