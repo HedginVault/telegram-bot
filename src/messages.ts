@@ -13,7 +13,7 @@ import {
   type VaultDetail,
   type VaultStatus,
   type VaultSummary,
-} from "@hedginvault/sdk";
+} from "@hedginxyz/sdk";
 import { type Liquidity, MAX_ACTIVE_BIN_SLIPPAGE, ZAP_OUT_SLIPPAGE_BPS, type PendingAction, type RangeBins, type SideBins, type SideLiquidity, type VaultChanges } from "./actions";
 import {
   type AmountInput,

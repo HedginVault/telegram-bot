@@ -1,4 +1,4 @@
-import type { Holdings, NavHistoryPoint, PhoenixManager, PoolInfo, PoolSearchPage, Quote, RequestQueue, Strategy, StrategyHistoryItem, VaultDetail, VaultSummary } from "@hedginvault/sdk";
+import type { Holdings, NavHistoryPoint, PhoenixManager, PoolInfo, PoolSearchPage, Quote, RequestQueue, Strategy, StrategyHistoryItem, VaultDetail, VaultSummary } from "@hedginxyz/sdk";
 
 export const VAULT = "Vau1t111111111111111111111111111111111111111";
 export const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";

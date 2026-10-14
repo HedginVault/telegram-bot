@@ -8,7 +8,7 @@ import {
   binRangeForPrices,
   formatUnits,
   parseUnits,
-} from "@hedginvault/sdk";
+} from "@hedginxyz/sdk";
 import type { PendingAction, VaultChanges } from "./actions";
 import { lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapAmountMessage, swapCardMessage, swapPickerMessage, swapQuoteMessage, swapSlippageMessage, trackFormMessage, vaultFormMessage } from "./messages";
 import {

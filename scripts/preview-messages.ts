@@ -2,7 +2,7 @@
  * Prints the redesigned screens as Telegram HTML plus their button rows, from test fixtures.
  * Run: yarn tsx scripts/preview-messages.ts
  */
-import type { HedgeClient } from "@hedginvault/sdk";
+import type { HedgeClient } from "@hedginxyz/sdk";
 import type { PendingAction } from "../src/actions";
 import { type Form, applyFormOp, applyFormText, createLpForm, renderForm } from "../src/forms";
 import { type ScreenDeps, renderScreen } from "../src/screens";
