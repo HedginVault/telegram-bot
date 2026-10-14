@@ -5,12 +5,13 @@ import {
   type PoolInfo,
   type PriceRange,
   type VaultDetail,
+  binPrice,
   binRangeForPrices,
   formatUnits,
   parseUnits,
 } from "@hedginxyz/sdk";
-import type { PendingAction, VaultChanges } from "./actions";
-import { lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapAmountMessage, swapCardMessage, swapPickerMessage, swapQuoteMessage, swapSlippageMessage, trackFormMessage, vaultFormMessage } from "./messages";
+import type { PendingAction, PhoenixOrder, VaultChanges } from "./actions";
+import { limitOrderFormMessage, lpAmountMessage, lpFormMessage, orderFormMessage, phoenixTransferFormMessage, swapAmountMessage, swapCardMessage, swapPickerMessage, swapQuoteMessage, swapSlippageMessage, trackFormMessage, vaultFormMessage } from "./messages";
 import {
   type Button,
   type FormOp,
@@ -49,6 +50,11 @@ const DEFAULT_RANGE_BPS: Record<LpSide, number> = { both: 500, x: 1000, y: 1000 
 /** `phoenix/order` accepts market slippage of 1..2000 bps. */
 export const MAX_ORDER_SLIPPAGE_BPS = 2000;
 export const ORDER_SLIPPAGE_PRESETS = [50, 100, 300] as const;
+/** `dlmm/limit-order/place` takes at most this many bins. */
+export const MAX_LIMIT_ORDER_BINS = 50;
+/** How far from the price a limit order reaches: up for an ask, down for a bid. */
+export const LIMIT_RANGE_PRESETS_BPS = [100, 200, 500, 1000] as const;
+const DEFAULT_LIMIT_RANGE_BPS = 200;
 /** `dlmm/initialize` takes at most this many bins. */
 export const MAX_EMPTY_POSITION_BINS = 70;
 export const MAX_VAULT_NAME_BYTES = 32;
@@ -150,6 +156,26 @@ export interface OrderForm {
   price?: string;
   postOnly: boolean;
   reduceOnly: boolean;
+  /** USD trigger prices armed on the position; sent only with a market order that is not reduce-only. */
+  takeProfit?: string;
+  stopLoss?: string;
+}
+
+/** A Meteora limit order: an ask sells token X in bins above the price, a bid sells token Y below it. */
+export interface LimitOrderForm {
+  kind: "limitOrder";
+  vault: string;
+  deposit: TokenRef;
+  pool?: PoolInfo;
+  side: "ask" | "bid";
+  minPrice?: number;
+  maxPrice?: number;
+  /** The range preset in use; unset once the user types a min or max price. */
+  rangeBps?: number;
+  /** Of the sold token. */
+  amount?: AmountInput;
+  poolQuery?: string;
+  poolChoices?: PoolChoice[];
 }
 
 /** Fees and limits of a vault; limits in base units of the deposit token (shares share its decimals). */
@@ -182,7 +208,7 @@ export interface TrackForm {
   token?: PickedToken;
 }
 
-export type Form = SwapForm | LpForm | PhoenixTransferForm | OrderForm | VaultForm | TrackForm;
+export type Form = SwapForm | LpForm | LimitOrderForm | PhoenixTransferForm | OrderForm | VaultForm | TrackForm;
 
 
 /** A value the user typed that cannot be used; the message is shown as-is. */
@@ -251,7 +277,7 @@ export function parseFeeBps(text: string): number {
 /** A positive decimal string as Phoenix takes it ("0.5", "142.25"), at most 12 decimals. */
 export function parseDecimal(text: string, what: string): string {
   const trimmed = text.trim().replace(/,/g, "");
-  if (!/^\d+(\.\d{1,12})?$/.test(trimmed) || !/[1-9]/.test(trimmed)) {
+  if (!/^\d{1,15}(\.\d{1,12})?$/.test(trimmed) || !/[1-9]/.test(trimmed)) {
     throw new InputError(`Send the ${what} as a positive number like "142.5", with at most 12 decimals.`);
   }
   return trimmed.replace(/^0+(?=\d)/, "");
@@ -425,10 +451,13 @@ export async function createLpForm(api: HedgeClient, vault: string, position?: {
   return form;
 }
 
+export async function createLimitOrderForm(api: HedgeClient, vault: string): Promise<LimitOrderForm> {
+  const holdings = await api.getHoldings(vault);
+  return { kind: "limitOrder", vault, deposit: tokenRef(holdings.depositToken), side: "ask" };
+}
+
 function setPool(form: LpForm, pool: PoolInfo, baseFeePct: number | null): void {
-  if (pool.tokenX.mint !== form.deposit.mint && pool.tokenY.mint !== form.deposit.mint) {
-    throw new InputError(`That pool does not include the vault's deposit token, ${form.deposit.symbol}.`);
-  }
+  assertPairsWithDeposit(pool, form.deposit);
   form.pool = pool;
   form.baseFeePct = baseFeePct;
   form.poolQuery = undefined;
@@ -468,6 +497,101 @@ export function formRange(form: LpForm): PriceRange | string {
   }
 }
 
+/** The token a limit order sells and the one it buys. */
+export const limitOrderTokens = (pool: PoolInfo, side: LimitOrderForm["side"]) =>
+  side === "ask" ? { sold: tokenRef(pool.tokenX), bought: tokenRef(pool.tokenY) } : { sold: tokenRef(pool.tokenY), bought: tokenRef(pool.tokenX) };
+
+function setLimitRange(form: LimitOrderForm, bps: number): void {
+  if (!form.pool) return;
+  const active = Number(form.pool.activePrice);
+  const bin = 1 + form.pool.binStep / 10_000;
+  form.rangeBps = bps;
+  // The near edge sits 1.5 bins from the price, so the order starts on the next bin past it.
+  // On wide bin steps a small preset falls inside the first bin; it then covers the first two bins.
+  form.minPrice = form.side === "ask" ? active * bin ** 1.5 : Math.min(active * (1 - bps / 10_000), active * bin ** -1.75);
+  form.maxPrice = form.side === "ask" ? Math.max(active * (1 + bps / 10_000), active * bin ** 1.75) : active * bin ** -1.5;
+}
+
+/** Bins a limit order rests in, both ends inclusive. */
+export interface LimitOrderRange extends InclusiveBinRange {
+  binCount: number;
+  lowPrice: number;
+  highPrice: number;
+  /** The prices span more than the API takes; the bins farthest from the price were dropped. */
+  capped: boolean;
+}
+
+/** The bins the form's prices cover, or why they cannot hold this side's order. */
+export function limitOrderRange(form: LimitOrderForm): LimitOrderRange | string {
+  const pool = form.pool;
+  if (!pool || form.minPrice === undefined || form.maxPrice === undefined) return "Set a min and max price.";
+  let covered: PriceRange;
+  try {
+    covered = binRangeForPrices(pool, form.minPrice, form.maxPrice);
+  } catch (error) {
+    return error instanceof Error ? error.message : "Invalid range";
+  }
+  const { tokenX, tokenY } = pool;
+  if (form.side === "ask" && covered.sides !== "x") return `A sell order must sit above the current price. Raise the min price above ${formatPrice(Number(pool.activePrice))} ${tokenY.symbol}.`;
+  if (form.side === "bid" && covered.sides !== "y") return `A buy order must sit below the current price. Lower the max price below ${formatPrice(Number(pool.activePrice))} ${tokenY.symbol} per ${tokenX.symbol}.`;
+  let lowerBinId = covered.lowerBinId;
+  let upperBinId = covered.upperBinId - 1;
+  const capped = upperBinId - lowerBinId + 1 > MAX_LIMIT_ORDER_BINS;
+  if (capped && form.side === "ask") upperBinId = lowerBinId + MAX_LIMIT_ORDER_BINS - 1;
+  if (capped && form.side === "bid") lowerBinId = upperBinId - MAX_LIMIT_ORDER_BINS + 1;
+  return { lowerBinId, upperBinId, binCount: upperBinId - lowerBinId + 1, lowPrice: binPrice(pool, lowerBinId), highPrice: binPrice(pool, upperBinId), capped };
+}
+
+/** Splits `totalBaseUnits` evenly over the range's bins; the remainder goes one unit each to the first bins. */
+export function spreadOverBins(totalBaseUnits: bigint, range: InclusiveBinRange): { binId: number; amount: string }[] {
+  const count = BigInt(range.upperBinId - range.lowerBinId + 1);
+  const each = totalBaseUnits / count;
+  const remainder = totalBaseUnits % count;
+  if (each === 0n) throw new InputError(`That amount is too small to spread over ${count} bins. Raise it or narrow the range.`);
+  return Array.from({ length: Number(count) }, (_, index) => ({
+    binId: range.lowerBinId + index,
+    amount: (each + (BigInt(index) < remainder ? 1n : 0n)).toString(),
+  }));
+}
+
+/** A pasted pool address, or the top search matches that pair with the deposit token. */
+async function findPools(api: HedgeClient, vault: string, deposit: TokenRef, text: string): Promise<{ pool: PoolInfo } | { query: string; choices: PoolChoice[] }> {
+  const query = text.trim();
+  if (BASE58_ADDRESS.test(query)) return { pool: await api.getPool(vault, query) };
+  const { pools } = await api.searchPools(vault, query);
+  const eligible = pools.filter((p) => p.tokenX.mint === deposit.mint || p.tokenY.mint === deposit.mint);
+  if (eligible.length === 0) throw new InputError(`No pool matching "${query}" pairs with ${deposit.symbol}.`);
+  const choices = eligible
+    .map((p) => ({
+      address: p.address,
+      pair: `${p.tokenX.symbol}/${p.tokenY.symbol}`,
+      binStep: p.binStep,
+      baseFeePct: p.baseFeePct ?? null,
+      tvl: p.tvl ?? null,
+      volume24h: p.volume24h ?? null,
+    }))
+    .sort((a, b) => (b.tvl ?? -1) - (a.tvl ?? -1))
+    .slice(0, 6);
+  return { query, choices };
+}
+
+function assertPairsWithDeposit(pool: PoolInfo, deposit: TokenRef): void {
+  if (pool.tokenX.mint !== deposit.mint && pool.tokenY.mint !== deposit.mint) {
+    throw new InputError(`That pool does not include the vault's deposit token, ${deposit.symbol}.`);
+  }
+}
+
+function setLimitPool(form: LimitOrderForm, pool: PoolInfo): void {
+  assertPairsWithDeposit(pool, form.deposit);
+  form.pool = pool;
+  form.poolQuery = undefined;
+  form.poolChoices = undefined;
+  form.amount = undefined;
+  // Default to selling the non-deposit token: an ask sells X, a bid sells Y.
+  form.side = pool.tokenX.mint === form.deposit.mint ? "bid" : "ask";
+  setLimitRange(form, DEFAULT_LIMIT_RANGE_BPS);
+}
+
 const PROMPTS: Record<TextField, string> = {
   token: "📋 Paste the token's contract address (mint).",
   amount: 'How much? Send an amount like "1.5", a share like "25%", or "max".',
@@ -487,6 +611,8 @@ const PROMPTS: Record<TextField, string> = {
   depositCap: 'Send the most the vault may hold, in deposit tokens, e.g. "100000". Send "none" for no cap.',
   minDeposit: 'Send the smallest deposit allowed, in deposit tokens, e.g. "10".',
   minWithdrawalShares: 'Send the fewest shares a withdrawal may redeem, e.g. "1".',
+  takeProfit: 'Send the take-profit trigger price in USD, e.g. "180". Send "0" to clear.',
+  stopLoss: 'Send the stop-loss trigger price in USD, e.g. "120". Send "0" to clear.',
 };
 
 function getForm(deps: FormDeps, formId: string): Form {
@@ -500,6 +626,34 @@ export async function applyFormOp(formId: string, op: FormOp, deps: FormDeps): P
   const show: FormResult = { kind: "show", screen: { kind: "form", formId } };
   if (op.op === "ask") return { kind: "ask", field: op.field, prompt: PROMPTS[op.field] };
   const review = async (action: Promise<PendingAction>): Promise<FormResult> => ({ kind: "show", screen: { kind: "confirm", actionId: deps.actions.put(await action) } });
+  if (form.kind === "limitOrder") {
+    switch (op.op) {
+      case "pool": {
+        const choice = form.poolChoices?.[op.index];
+        if (!choice) throw expired();
+        setLimitPool(form, await deps.api.getPool(form.vault, choice.address));
+        return show;
+      }
+      case "side":
+        if (!form.pool) throw new InputError("Pick a pool first.");
+        form.side = form.side === "ask" ? "bid" : "ask";
+        form.amount = undefined;
+        setLimitRange(form, form.rangeBps ?? DEFAULT_LIMIT_RANGE_BPS);
+        return show;
+      case "range":
+        if (!form.pool) throw new InputError("Pick a pool first.");
+        setLimitRange(form, op.bps);
+        return show;
+      case "share":
+        if (!form.pool) throw new InputError("Pick a pool first.");
+        form.amount = { kind: "share", bps: op.bps };
+        return show;
+      case "review":
+        return review(limitOrderAction(form, deps.api));
+      default:
+        throw expired();
+    }
+  }
   if (form.kind === "phoenixTransfer") {
     if (op.op === "share") {
       form.amount = { kind: "share", bps: op.bps };
@@ -674,6 +828,39 @@ export async function applyFormText(formId: string, field: TextField, text: stri
       case "orderSlippage":
         form.slippageBps = parseOrderSlippage(text);
         return;
+      case "takeProfit":
+      case "stopLoss": {
+        const value = text.trim() === "0" ? undefined : parseDecimal(text, field === "takeProfit" ? "take-profit price" : "stop-loss price");
+        if (field === "takeProfit") form.takeProfit = value;
+        else form.stopLoss = value;
+        return;
+      }
+      default:
+        throw expired();
+    }
+  }
+  if (form.kind === "limitOrder") {
+    switch (field) {
+      case "pool": {
+        const found = await findPools(deps.api, form.vault, form.deposit, text);
+        if ("pool" in found) setLimitPool(form, found.pool);
+        else {
+          form.poolQuery = found.query;
+          form.poolChoices = found.choices;
+        }
+        return;
+      }
+      case "minPrice":
+      case "maxPrice":
+        if (!form.pool) throw new InputError("Pick a pool first.");
+        form[field] = parsePrice(text);
+        form.rangeBps = undefined;
+        return;
+      case "amount": {
+        if (!form.pool) throw new InputError("Pick a pool first.");
+        form.amount = parseAmountInput(text, limitOrderTokens(form.pool, form.side).sold.decimals);
+        return;
+      }
       default:
         throw expired();
     }
@@ -746,26 +933,12 @@ export async function applyFormText(formId: string, field: TextField, text: stri
   }
   switch (field) {
     case "pool": {
-      const query = text.trim();
-      if (BASE58_ADDRESS.test(query)) {
-        setPool(form, await deps.api.getPool(form.vault, query), null);
-        return;
+      const found = await findPools(deps.api, form.vault, form.deposit, text);
+      if ("pool" in found) setPool(form, found.pool, null);
+      else {
+        form.poolQuery = found.query;
+        form.poolChoices = found.choices;
       }
-      const { pools } = await deps.api.searchPools(form.vault, query);
-      const eligible = pools.filter((p) => p.tokenX.mint === form.deposit.mint || p.tokenY.mint === form.deposit.mint);
-      if (eligible.length === 0) throw new InputError(`No pool matching "${query}" pairs with ${form.deposit.symbol}.`);
-      form.poolQuery = query;
-      form.poolChoices = eligible
-        .map((p) => ({
-          address: p.address,
-          pair: `${p.tokenX.symbol}/${p.tokenY.symbol}`,
-          binStep: p.binStep,
-          baseFeePct: p.baseFeePct ?? null,
-          tvl: p.tvl ?? null,
-          volume24h: p.volume24h ?? null,
-        }))
-        .sort((a, b) => (b.tvl ?? -1) - (a.tvl ?? -1))
-        .slice(0, 6);
       return;
     }
     case "minPrice":
@@ -863,16 +1036,59 @@ async function phoenixTransferAction(form: PhoenixTransferForm, api: HedgeClient
   return form.direction === "deposit" ? { kind: "phoenixDeposit", vault: form.vault, amountBaseUnits } : { kind: "phoenixWithdraw", vault: form.vault, amountBaseUnits };
 }
 
+/** Phoenix accepts a TP/SL only on a market order that opens or adds to a position. */
+export const takesTpSl = (form: OrderForm) => form.type === "market" && !form.reduceOnly;
+
+/** A take-profit must sit on the winning side of the mark and a stop-loss on the losing side. */
+function tpSlFor(form: OrderForm): PhoenixOrder["tpSl"] {
+  if (!takesTpSl(form) || (!form.takeProfit && !form.stopLoss)) return undefined;
+  const mark = form.markets.find((m) => m.symbol === form.symbol)?.markPrice ?? "0";
+  const long = form.side === "long";
+  // Strict on both sides, as the API checks: a trigger at the mark is refused.
+  const beyond = (price: string, above: boolean) => (above ? Number(price) > Number(mark) : Number(price) < Number(mark));
+  if (Number(mark) > 0 && form.takeProfit && !beyond(form.takeProfit, long)) {
+    throw new InputError(`For a ${form.side}, the take-profit must be ${long ? "above" : "below"} the mark price ($${mark}).`);
+  }
+  if (Number(mark) > 0 && form.stopLoss && !beyond(form.stopLoss, !long)) {
+    throw new InputError(`For a ${form.side}, the stop-loss must be ${long ? "below" : "above"} the mark price ($${mark}).`);
+  }
+  return { takeProfit: form.takeProfit ?? null, stopLoss: form.stopLoss ?? null };
+}
+
 function orderAction(form: OrderForm): PendingAction {
   if (!form.symbol) throw new InputError("Pick a market first.");
   if (!form.size) throw new InputError("Set a size first.");
-  let order: Extract<PendingAction, { kind: "phoenixOrder" }>["order"]["order"];
+  let order: PhoenixOrder["order"];
   if (form.type === "market") order = { type: "market", slippageBps: form.slippageBps };
   else {
     if (!form.price) throw new InputError("Set a limit price first.");
     order = { type: "limit", price: form.price, postOnly: form.postOnly };
   }
-  return { kind: "phoenixOrder", vault: form.vault, order: { symbol: form.symbol, side: form.side, size: form.size, reduceOnly: form.reduceOnly, order } };
+  const tpSl = tpSlFor(form);
+  return { kind: "phoenixOrder", vault: form.vault, order: { symbol: form.symbol, side: form.side, size: form.size, reduceOnly: form.reduceOnly, order, ...(tpSl && { tpSl }) } };
+}
+
+async function limitOrderAction(form: LimitOrderForm, api: HedgeClient): Promise<PendingAction> {
+  const pool = form.pool;
+  if (!pool) throw new InputError("Pick a pool first.");
+  if (!form.amount) throw new InputError("Set an amount first.");
+  const range = limitOrderRange(form);
+  if (typeof range === "string") throw new InputError(range);
+  const { sold, bought } = limitOrderTokens(pool, form.side);
+  const amountBaseUnits = resolveAmount(form.amount, idleBalanceOf(await api.getVault(form.vault), sold.mint));
+  if (amountBaseUnits === "0") throw new InputError(`The vault holds no idle ${sold.symbol}.`);
+  return {
+    kind: "limitOrderPlace",
+    vault: form.vault,
+    lbPair: pool.lbPair,
+    pairLabel: `${pool.tokenX.symbol}/${pool.tokenY.symbol}`,
+    side: form.side,
+    sold,
+    bought,
+    bins: spreadOverBins(BigInt(amountBaseUnits), range),
+    amountBaseUnits,
+    priceRange: { low: formatPrice(range.lowPrice), high: formatPrice(range.highPrice) },
+  };
 }
 
 function vaultAction(form: VaultForm): PendingAction {
@@ -899,6 +1115,8 @@ export async function renderForm(formId: string, deps: FormDeps): Promise<Render
       return renderSwapForm(formId, form, await deps.api.getVault(form.vault), deps);
     case "lp":
       return renderLpForm(formId, form, await deps.api.getVault(form.vault));
+    case "limitOrder":
+      return renderLimitOrderForm(formId, form, await deps.api.getVault(form.vault));
     case "phoenixTransfer":
       return renderPhoenixTransferForm(formId, form);
     case "order":
@@ -944,6 +1162,7 @@ function renderOrderForm(formId: string, form: OrderForm): RenderedScreen {
     rows.push([op("✏️ Limit price", { op: "ask", field: "price" }), op(`Post-only: ${form.postOnly ? "on" : "off"}`, { op: "postOnly" })]);
   }
   rows.push([op(`↩️ Reduce-only: ${form.reduceOnly ? "on" : "off"}`, { op: "reduceOnly" })]);
+  if (takesTpSl(form)) rows.push([op(`🎯 Take profit${form.takeProfit ? ` $${form.takeProfit}` : ""}`, { op: "ask", field: "takeProfit" }), op(`🛡 Stop loss${form.stopLoss ? ` $${form.stopLoss}` : ""}`, { op: "ask", field: "stopLoss" })]);
   if (form.symbol && form.size && (form.type === "market" || form.price)) rows.push([op("✅ Review", { op: "review" })]);
   rows.push([button("⬅️ Phoenix", { kind: "phoenix", vault: form.vault })]);
   return { html: orderFormMessage(form), keyboard: keyboard(rows) };
@@ -1068,6 +1287,35 @@ function renderLpForm(formId: string, form: LpForm, vault: VaultDetail): Rendere
     rows.push([op("🏊 Change pool", { op: "ask", field: "pool" }), back]);
   } else rows.push([back]);
   return { html, keyboard: keyboard(rows) };
+}
+
+function renderLimitOrderForm(formId: string, form: LimitOrderForm, vault: VaultDetail): RenderedScreen {
+  const op = (text: string, o: FormOp) => formButton(text, formId, o);
+  const back = button("⬅️ Vault", { kind: "vault", vault: form.vault });
+  const pool = form.pool;
+  if (!pool) {
+    const choices = (form.poolChoices ?? []).map((choice, index) =>
+      op(`${index + 1}. ${choice.pair} · ${choice.baseFeePct === null ? `bin ${choice.binStep}` : feePct(choice.baseFeePct)}`, { op: "pool", index }),
+    );
+    return { html: limitOrderFormMessage(form, undefined, undefined), keyboard: keyboard([...rowsOf(choices, 1), [op("🏊 Pick pool", { op: "ask", field: "pool" })], [back]]) };
+  }
+  const range = limitOrderRange(form);
+  const { sold } = limitOrderTokens(pool, form.side);
+  const balance = idleBalanceOf(vault, sold.mint);
+  const x = pool.tokenX.symbol;
+  const sign = form.side === "ask" ? "+" : "−";
+  const rows: Button[][] = [
+    [op(form.side === "ask" ? `🔴 Sell ${x} above price · tap for buy` : `🟢 Buy ${x} below price · tap for sell`, { op: "side" })],
+    LIMIT_RANGE_PRESETS_BPS.map((bps) => op(`${check(form.rangeBps === bps)}${sign}${bps / 100}%`, { op: "range", bps })),
+    [op("✏️ Min price", { op: "ask", field: "minPrice" }), op("✏️ Max price", { op: "ask", field: "maxPrice" })],
+    [
+      ...[2500, 5000, 10_000].map((bps) => op(`${check(form.amount?.kind === "share" && form.amount.bps === bps)}${bps === 10_000 ? "Max" : `${bps / 100}%`}`, { op: "share", bps })),
+      op("✏️ Amount", { op: "ask", field: "amount" }),
+    ],
+  ];
+  if (form.amount && typeof range !== "string") rows.push([op("✅ Review", { op: "review" })]);
+  rows.push([op("🏊 Change pool", { op: "ask", field: "pool" }), back]);
+  return { html: limitOrderFormMessage(form, range, balance), keyboard: keyboard(rows) };
 }
 
 /** Quotes the swap form and offers the confirm step. */

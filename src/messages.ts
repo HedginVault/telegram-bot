@@ -17,6 +17,8 @@ import {
 import { type Liquidity, MAX_ACTIVE_BIN_SLIPPAGE, ZAP_OUT_SLIPPAGE_BPS, type PendingAction, type RangeBins, type SideBins, type SideLiquidity, type VaultChanges } from "./actions";
 import {
   type AmountInput,
+  type LimitOrderForm,
+  type LimitOrderRange,
   type LpForm,
   NO_DEPOSIT_CAP,
   type OrderForm,
@@ -27,10 +29,12 @@ import {
   type VaultParams,
   describeAmount,
   formatPrice,
+  limitOrderTokens,
   needsWarning,
   type PickedToken,
   rangePresetLabel,
   shapeLabel,
+  takesTpSl,
   vaultChanges,
 } from "./forms";
 import type { TokenRef } from "./ui";
@@ -108,6 +112,7 @@ export function rangeGauge(lower: number, active: number, upper: number): string
 }
 
 type DlmmStrategy = Extract<Strategy, { type: "dlmm" }>;
+type LimitOrderStrategy = Extract<Strategy, { type: "dlmm_limit_order" }>;
 /** Display only: compares the API's decimal price strings as numbers. */
 const inRange = (s: DlmmStrategy) => Number(s.lowerPrice) <= Number(s.activePrice) && Number(s.activePrice) <= Number(s.upperPrice);
 const rangeStatus = (s: DlmmStrategy) => (inRange(s) ? "🟢 in range" : "🟠 out of range");
@@ -132,6 +137,18 @@ const signedUsd = (value: number) => `${value < 0 ? "-" : value > 0 ? "+" : ""}$
 const lpPnl = (s: DlmmStrategy) =>
   s.pnlUsd == null ? undefined : `${signIcon(s.pnlUsd)} ${signedUsd(s.pnlUsd)}${s.pnlPct == null ? "" : ` (${s.pnlPct > 0 ? "+" : ""}${s.pnlPct.toFixed(2)}%)`}`;
 const pair = (x: TokenRef, y: TokenRef) => `${escapeHtml(x.symbol)}/${escapeHtml(y.symbol)}`;
+
+/** An ask sells token X for Y; a bid sells Y to buy X. Amounts in the sold token. */
+function limitOrderFill(s: LimitOrderStrategy) {
+  const ask = s.side === "ask";
+  const sold = ask ? s.tokenX : s.tokenY;
+  const bought = ask ? s.tokenY : s.tokenX;
+  const deposit = BigInt(ask ? s.depositX : s.depositY);
+  const unfilled = BigInt(ask ? s.unfilledX : s.unfilledY);
+  const filledPct = deposit === 0n ? 0n : ((deposit - unfilled) * 100n) / deposit;
+  const status = unfilled === 0n && deposit > 0n ? "✅ filled" : filledPct === 0n && unfilled === deposit ? "⏳ waiting" : `🟡 ${filledPct}% filled`;
+  return { sold, bought, deposit, unfilled, proceeds: ask ? s.proceedsY : s.proceedsX, status, label: `limit ${ask ? "sell" : "buy"} ${escapeHtml(s.tokenX.symbol)}` };
+}
 const leverage = (value: number | null) => (value === null ? "n/a" : `${value.toFixed(2)}x`);
 const SPARK = "▁▂▃▄▅▆▇█";
 /** One block per value, scaled between the smallest and largest, oldest first. */
@@ -173,6 +190,7 @@ export const HELP_MESSAGE = [
   "",
   "<b>Swap</b> · Vault → 💱 Swap. Pick a held token or paste any token's contract address, tap 🟢 Buy or 🔴 Sell, then a share or ✏️ to type an amount (\"1.5\", \"25%\", \"max\").",
   "<b>LP</b> · Vault → ➕ New LP. Paste a pool or search by symbol, pick a side, shape, and range, and size each token.",
+  "<b>Limit order</b> · Vault → 📌 Limit order. Pick a pool, sell above or buy below the price, set the range and amount. Cancel it from 🧩 Strategies.",
   "",
   "<b>Commands</b>",
   "/vaults · vaults your active wallet manages",
@@ -241,6 +259,10 @@ function positionRows(strategies: Strategy[]): string[] {
       case "phoenix":
         // Phoenix equity is in USDC atoms (6 decimals).
         return [`📈 <b>Perps</b> · ${compact(s.equity, 6, "USDC")} equity · ${s.leverage === null ? "leverage n/a" : leverage(s.leverage)}`];
+      case "dlmm_limit_order": {
+        const fill = limitOrderFill(s);
+        return [`📌 <b>${pair(s.tokenX, s.tokenY)}</b> ${fill.label} · ${price(s.lowerPrice)} – ${price(s.upperPrice)} · ${fill.status}`];
+      }
       case "unreadable":
         return [`⚠️ Unreadable ${escapeHtml(s.protocol)} strategy`];
       case "jupiter":
@@ -291,6 +313,20 @@ function dlmmBlock(s: DlmmStrategy): string[] {
   ];
 }
 
+function limitOrderBlock(s: LimitOrderStrategy): string[] {
+  const { sold, bought, deposit, unfilled, proceeds, status, label } = limitOrderFill(s);
+  return [
+    `📌 <b>${pair(s.tokenX, s.tokenY)}</b> · ${label} · ${status}`,
+    ...tree([
+      `Range <b>${price(s.lowerPrice)} – ${price(s.upperPrice)}</b> · now ${price(s.activePrice)}`,
+      `Left ${compact(unfilled.toString(), sold.decimals, sold.symbol)} of ${compact(deposit.toString(), sold.decimals, sold.symbol)}`,
+      `Got ${compact(proceeds, bought.decimals, bought.symbol)}`,
+      `Fees ${compact(s.feeX, s.tokenX.decimals, s.tokenX.symbol)} + ${compact(s.feeY, s.tokenY.decimals, s.tokenY.symbol)}`,
+    ]),
+    address(s.limitOrder),
+  ];
+}
+
 export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): string {
   const title = `🧩 <b>${escapeHtml(vault.name)}</b> · strategies`;
   if (strategies.length === 0) return `${title}\n\nNo open strategies.`;
@@ -304,6 +340,7 @@ export function strategiesMessage(vault: VaultSummary, strategies: Strategy[]): 
   }
   for (const s of strategies) {
     if (s.type === "dlmm") blocks.push(dlmmBlock(s));
+    if (s.type === "dlmm_limit_order") blocks.push(limitOrderBlock(s));
     // Phoenix equity is in USDC atoms (6 decimals).
     if (s.type === "phoenix") blocks.push(["📈 <b>Phoenix perps</b>", ...tree([`Equity ${compact(s.equity, 6, "USDC")} · leverage ${leverage(s.leverage)}`])]);
     if (s.type === "unreadable") blocks.push([`⚠️ <b>Unreadable ${escapeHtml(s.protocol)} strategy</b>`, address(s.address), `<i>${escapeHtml(s.reason)}</i>`]);
@@ -459,7 +496,7 @@ export function requestsMessage(vault: VaultSummary, queue: RequestQueue): strin
   return lines.join("\n");
 }
 
-const STRATEGY_TYPE_LABEL = { jupiter: "Swap", dlmm: "Meteora DLMM", phoenix: "Phoenix perps" } as const;
+const STRATEGY_TYPE_LABEL = { jupiter: "Swap", dlmm: "Meteora DLMM", dlmm_limit_order: "Limit order", phoenix: "Phoenix perps" } as const;
 export const STRATEGY_HISTORY_LIMIT = 10;
 
 type ClosedToken = StrategyHistoryItem["tokens"][number];
@@ -484,7 +521,7 @@ export function strategyHistoryMessage(vault: VaultSummary, items: StrategyHisto
     totals.set(token.mint, { ...token, realizedPnl: realized });
   }
   const blocks = shown.map((item) => {
-    const pair = item.type === "dlmm" && item.tokens.length > 0 ? ` · ${item.tokens.map((t) => escapeHtml(t.symbol ?? shortAddress(t.mint))).join("/")}` : "";
+    const pair = (item.type === "dlmm" || item.type === "dlmm_limit_order") && item.tokens.length > 0 ? ` · ${item.tokens.map((t) => escapeHtml(t.symbol ?? shortAddress(t.mint))).join("/")}` : "";
     const held = item.openedTs === null ? "" : `⏱ Held ${duration(item.closedTs - item.openedTs)} · `;
     const rows = item.tokens.map((token) => {
       const fees = token.decimals !== null && token.feesRetained !== "0" ? ` · fees +${amount(token.feesRetained, token.decimals, "").trimEnd()}` : "";
@@ -586,6 +623,13 @@ export function phoenixMessage(vault: VaultSummary, phoenix: PhoenixManager): st
     lines.push("", `<b>Positions</b> (${positions.length})`);
     if (positions.length === 0) lines.push("<i>None.</i>");
     for (const [symbol, price] of positions) lines.push(`• ${escapeHtml(symbol)} · liquidation at $${escapeHtml(price)}`);
+    if (phoenix.tpSl === null) lines.push("<i>Armed TP/SL could not be read right now.</i>");
+    for (const bracket of phoenix.tpSl ?? []) {
+      // `greaterPrice` triggers as the price rises: the take-profit of a long, the stop-loss of a short.
+      const [takeProfit, stopLoss] = bracket.closes === "long" ? [bracket.greaterPrice, bracket.lessPrice] : [bracket.lessPrice, bracket.greaterPrice];
+      const legs = [takeProfit ? `🎯 TP $${escapeHtml(takeProfit)}` : "", stopLoss ? `🛡 SL $${escapeHtml(stopLoss)}` : ""].filter(Boolean);
+      lines.push(`  ${escapeHtml(bracket.symbol)} ${bracket.closes} · ${legs.join(" · ")}`);
+    }
   } else {
     lines.push("<i>Phoenix did not report margin right now.</i>");
   }
@@ -635,6 +679,12 @@ export function actionTitle(action: PendingAction): string {
       return `Create an empty ${escapeHtml(action.pairLabel)} position`;
     case "dlmmClose":
       return `Close the ${escapeHtml(action.pairLabel)} position`;
+    case "limitOrderPlace":
+      return action.side === "ask"
+        ? `Limit sell ${amount(action.amountBaseUnits, action.sold.decimals, action.sold.symbol)} for ${escapeHtml(action.bought.symbol)}`
+        : `Limit buy ${escapeHtml(action.bought.symbol)} with ${amount(action.amountBaseUnits, action.sold.decimals, action.sold.symbol)}`;
+    case "limitOrderCancel":
+      return `Cancel the ${escapeHtml(action.label)}`;
     case "jupiterInit":
       return `Track ${escapeHtml(action.token.symbol)} (open its swap strategy)`;
     case "phoenixInit":
@@ -775,6 +825,20 @@ function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
     case "dlmmClose":
       r.warnings.push("⚠️ This removes all of the position's liquidity, claims its fees back to the vault, and closes it. Large positions take several transactions.");
       break;
+    case "limitOrderPlace":
+      r.rows.push(
+        `Pool <b>${escapeHtml(action.pairLabel)}</b>`,
+        `Range ${escapeHtml(action.priceRange.low)} → ${escapeHtml(action.priceRange.high)}`,
+        `Bins ${action.bins.length} · amount split evenly`,
+      );
+      r.notes.push(
+        `Fills pay out in ${escapeHtml(action.bought.symbol)}. Proceeds and fees stay in the order until you cancel it from 🧩 Strategies.`,
+        "Opens any missing swap strategy for the pair first. Costs a small refundable SOL rent from the manager wallet.",
+      );
+      break;
+    case "limitOrderCancel":
+      r.notes.push("Cancels every bin and pays the unfilled amount, the fill proceeds, and fees back to the vault, then closes the order. Its rent returns to your wallet.");
+      break;
     case "jupiterInit":
       r.rows.push(`Mint ${address(action.token.mint)}`);
       r.notes.push("Lets the vault hold and swap this token.");
@@ -788,6 +852,10 @@ function receipt(action: PendingAction, quote: Quote | undefined): Receipt {
       if (order.order.type === "market") r.rows.push(`Slippage limit ${order.order.slippageBps / 100}% around the mark price`);
       else if (order.order.postOnly) r.rows.push("Post-only: cancelled instead of filling right away");
       if (order.reduceOnly) r.rows.push("Reduce-only: can only shrink an open position");
+      if (order.tpSl) {
+        r.rows.push(`Take profit ${order.tpSl.takeProfit ? `$${escapeHtml(order.tpSl.takeProfit)}` : "off"} · stop loss ${order.tpSl.stopLoss ? `$${escapeHtml(order.tpSl.stopLoss)}` : "off"}`);
+        r.notes.push(`The TP/SL covers the whole ${escapeHtml(order.symbol)} position and replaces any armed one.`);
+      }
       break;
     }
     case "vaultCreate":
@@ -965,8 +1033,8 @@ export function swapQuoteMessage(form: SwapForm, tokens: { input: TokenRef; outp
   return lines.join("\n");
 }
 
-function poolPickerMessage(form: LpForm): string {
-  const lines = ["➕ <b>New LP position</b> · pick a pool"];
+function poolPickerMessage(form: LpForm | LimitOrderForm): string {
+  const lines = [form.kind === "lp" ? "➕ <b>New LP position</b> · pick a pool" : "📌 <b>New limit order</b> · pick a pool"];
   const choices = form.poolChoices ?? [];
   if (choices.length === 0 || form.poolQuery === undefined) {
     lines.push("", `Pool <i>not set: paste a pool address or search, e.g. "SOL"</i>`, `<i>The pool must include ${escapeHtml(form.deposit.symbol)}.</i>`);
@@ -1046,6 +1114,36 @@ export function lpFormMessage(form: LpForm, range: PriceRange | string | undefin
   return lines.join("\n");
 }
 
+export function limitOrderFormMessage(form: LimitOrderForm, range: LimitOrderRange | string | undefined, soldBalanceBaseUnits: string | undefined): string {
+  const pool = form.pool;
+  if (!pool) return poolPickerMessage(form);
+  const { tokenX, tokenY } = pool;
+  const x = escapeHtml(tokenX.symbol);
+  const y = escapeHtml(tokenY.symbol);
+  const { sold, bought } = limitOrderTokens(pool, form.side);
+  const lines = [
+    `📌 <b>${x}/${y}</b> · limit order · bin ${pool.binStep}`,
+    DIVIDER,
+    `Price <b>${price(pool.activePrice)}</b> ${y} per ${x}`,
+    "",
+    form.side === "ask" ? `🔴 <b>Sell ${x}</b> for ${y} as the price rises` : `🟢 <b>Buy ${x}</b> with ${y} as the price falls`,
+  ];
+  if (typeof range === "string") lines.push(`⚠️ <i>${escapeHtml(range)}</i>`);
+  else if (range) {
+    lines.push(
+      `Range <b>${escapeHtml(formatPrice(range.lowPrice))} – ${escapeHtml(formatPrice(range.highPrice))}</b> ${y} per ${x}`,
+      `<i>${range.binCount} bins, the amount split evenly${range.capped ? ` · capped at ${range.binCount} bins nearest the price` : ""}</i>`,
+    );
+  }
+  lines.push(
+    "",
+    `<b>${escapeHtml(sold.symbol)} to ${form.side === "ask" ? "sell" : "spend"}</b> ${depositAmount(form.amount, sold, soldBalanceBaseUnits)}`,
+    ...(soldBalanceBaseUnits === undefined ? [] : [`<i>Idle in vault ${compact(soldBalanceBaseUnits, sold.decimals, sold.symbol)}</i>`]),
+    `<i>Fills pay out in ${escapeHtml(bought.symbol)}. Everything stays in the order until you cancel it.</i>`,
+  );
+  return lines.join("\n");
+}
+
 export function phoenixTransferFormMessage(form: PhoenixTransferForm): string {
   const lines = [
     form.direction === "deposit" ? "💵 <b>Deposit USDC into Phoenix</b>" : "📤 <b>Withdraw from Phoenix</b>",
@@ -1069,6 +1167,10 @@ export function orderFormMessage(form: OrderForm): string {
       : `Limit order at ${form.price ? `$${escapeHtml(form.price)}` : "<i>price not set</i>"} · post-only ${form.postOnly ? "on" : "off"}`,
     `Reduce-only ${form.reduceOnly ? "on" : "off"}`,
   ];
+  if (takesTpSl(form)) {
+    const usd = (value: string | undefined) => (value ? `$${escapeHtml(value)}` : "off");
+    lines.push(`Take profit ${usd(form.takeProfit)} · stop loss ${usd(form.stopLoss)}`);
+  }
   return lines.join("\n");
 }
 

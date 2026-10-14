@@ -59,6 +59,36 @@ export const strategies: Strategy[] = [
   { type: "unreadable", address: "Strat4444444444444444444444444444444444444", protocol: "dlmm", reason: "position account missing" },
 ];
 
+export type LimitOrderStrategy = Extract<Strategy, { type: "dlmm_limit_order" }>;
+export const limitOrder: LimitOrderStrategy = {
+  type: "dlmm_limit_order",
+  address: "Strat5",
+  limitOrder: "LimitOrder111111111111111111111111111111111",
+  lbPair: "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y",
+  tokenX: { mint: SOL, symbol: "SOL", decimals: 9, priceUsd: 150 },
+  tokenY: { mint: USDC, symbol: "USDC", decimals: 6, priceUsd: 1 },
+  side: "ask",
+  binStep: 10,
+  lowerBinId: 5,
+  upperBinId: 6,
+  activeBinId: 4,
+  lowerPrice: "151",
+  upperPrice: "152",
+  activePrice: "150",
+  bins: [
+    { binId: 5, status: "partial", empty: false, deposit: "200000000", unfilled: "50000000", proceeds: "22650000", feeX: "0", feeY: "10000" },
+    { binId: 6, status: "open", empty: false, deposit: "200000000", unfilled: "200000000", proceeds: "0", feeX: "0", feeY: "0" },
+  ],
+  depositX: "400000000",
+  depositY: "0",
+  unfilledX: "250000000",
+  unfilledY: "0",
+  proceedsX: "0",
+  proceedsY: "22650000",
+  feeX: "0",
+  feeY: "10000",
+};
+
 export const POOL = "BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y";
 export const pool: PoolInfo = {
   lbPair: POOL,

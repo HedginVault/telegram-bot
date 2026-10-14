@@ -50,6 +50,7 @@ const screens: Screen[] = [
       "phoenixWithdraw",
       "newOrder",
       "trackToken",
+      "newLimitOrder",
     ] as const
   ).map((kind) => ({ kind, vault: VAULT })),
   { kind: "position", refId: ID },

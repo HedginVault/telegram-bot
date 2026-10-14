@@ -113,6 +113,23 @@ export type PendingAction =
   | { kind: "closeStrategy"; vault: string; strategy: string; label: string }
   /** Sells the vault's whole balance of a Jupiter-held token to the deposit token and closes its strategy. */
   | { kind: "jupiterSweep"; vault: string; mint: string; symbol: string; depositSymbol: string }
+  /** An ask sells `sold` (token X) above the price; a bid sells `sold` (token Y) below it. */
+  | {
+      kind: "limitOrderPlace";
+      vault: string;
+      lbPair: string;
+      pairLabel: string;
+      side: "ask" | "bid";
+      sold: TokenRef;
+      bought: TokenRef;
+      /** Strictly increasing, each amount above zero, in `sold` base units. */
+      bins: { binId: number; amount: string }[];
+      /** Display only: the bins' total and the prices of the first and last bin. */
+      amountBaseUnits: string;
+      priceRange: { low: string; high: string };
+    }
+  /** Cancels every bin; the API pays everything back and closes the order's strategy. `label` is display only. */
+  | { kind: "limitOrderCancel"; vault: string; limitOrder: string; label: string }
   | { kind: "jupiterInit"; vault: string; token: TokenRef; verified: boolean | null }
   | { kind: "phoenixInit"; vault: string }
   /** Not a builder: runs `onboardPhoenix`, which Phoenix co-signs. */
@@ -208,6 +225,10 @@ export function toActionRequest(action: Exclude<PendingAction, { kind: "phoenixO
       return { action: "dlmm/initialize", vault: action.vault, lbPair: action.lbPair, lowerBinId: action.lowerBinId, upperBinId: action.upperBinId };
     case "dlmmClose":
       return { action: "dlmm/close", vault: action.vault, position: action.position };
+    case "limitOrderPlace":
+      return { action: "dlmm/limit-order/place", vault: action.vault, lbPair: action.lbPair, side: action.side, bins: action.bins };
+    case "limitOrderCancel":
+      return { action: "dlmm/limit-order/cancel", vault: action.vault, limitOrder: action.limitOrder };
     case "jupiterInit":
       return { action: "jupiter/initialize", vault: action.vault, targetMint: action.token.mint };
     case "phoenixInit":

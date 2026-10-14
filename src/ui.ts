@@ -74,6 +74,8 @@ const TEXT_FIELDS = [
   "depositCap",
   "minDeposit",
   "minWithdrawalShares",
+  "takeProfit",
+  "stopLoss",
 ] as const;
 export type TextField = (typeof TEXT_FIELDS)[number];
 
@@ -92,6 +94,7 @@ export type Screen =
   | { kind: "phoenixDeposit"; vault: string }
   | { kind: "phoenixWithdraw"; vault: string }
   | { kind: "newOrder"; vault: string }
+  | { kind: "newLimitOrder"; vault: string }
   | { kind: "trackToken"; vault: string }
   | { kind: "newVault" }
   | { kind: "position"; refId: string }
@@ -241,6 +244,7 @@ const VAULT_SCREENS = {
   pw: "phoenixWithdraw",
   po: "newOrder",
   tt: "trackToken",
+  lo: "newLimitOrder",
 } as const;
 const STORE_SCREENS = { p: "position", al: "addLp", rl: "removeLp", f: "form", q: "swapQuote", c: "confirm", x: "execute" } as const;
 const WALLET_SCREENS = { w: "wallet", ws: "wallets", wn: "walletNew", wi: "walletImport", wk: "walletApiKey", we: "walletExport", wx: "walletReveal" } as const;
@@ -272,6 +276,7 @@ export function encodeScreen(screen: Screen): string {
     case "phoenixDeposit":
     case "phoenixWithdraw":
     case "newOrder":
+    case "newLimitOrder":
     case "trackToken":
       return `${prefixOf<VaultScreenKind>(VAULT_SCREENS, screen.kind)}:${screen.vault}`;
     case "position":

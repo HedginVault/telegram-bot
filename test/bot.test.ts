@@ -20,6 +20,7 @@ import {
   USDC,
   VAULT,
   holdings,
+  limitOrder,
   navHistory,
   phoenixNone,
   phoenixReady,
@@ -249,6 +250,7 @@ describe("buttons", () => {
     expect(buttons().map((b) => b.text)).toEqual([
       "💱 Swap",
       "➕ New LP",
+      "📌 Limit order",
       "🧩 Strategies",
       "📈 Phoenix",
       "📊 NAV history",
@@ -995,6 +997,69 @@ describe("LP form", () => {
   });
 });
 
+describe("limit orders", () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  const evenBins = (lowerBinId: number, upperBinId: number, amount: string) =>
+    Array.from({ length: upperBinId - lowerBinId + 1 }, (_, index) => ({ binId: lowerBinId + index, amount }));
+
+  it("lists a limit order on the strategies screen and cancels all of it", async () => {
+    const ui = setup({ ...tradingApi(), getStrategies: vi.fn(async () => [limitOrder]) });
+    await openVault(ui, "🧩 Strategies");
+    expect(ui.lastScreen().text).toContain("📌 <b>SOL/USDC</b> · limit sell SOL · 🟡 37% filled");
+    await ui.click("✖️ Cancel SOL/USDC limit sell");
+    expect(ui.lastScreen().text).toContain("<b>Cancel the SOL/USDC limit sell order</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/limit-order/cancel", { vault: VAULT, limitOrder: limitOrder.limitOrder });
+  });
+
+  it("sells the vault's idle SOL above the price, split evenly over the preset's bins", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📌 Limit order");
+    await ui.fill("🏊 Pick pool", POOL);
+    expect(ui.lastScreen().text).toContain("🔴 <b>Sell SOL</b> for USDC as the price rises");
+    await ui.click("+1%");
+    expect(ui.lastScreen().text).toContain("<i>10 bins, the amount split evenly</i>");
+    await ui.click("Max");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("<b>Limit sell 0.01 SOL for USDC</b>");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/limit-order/place", { vault: VAULT, lbPair: POOL, side: "ask", bins: evenBins(-99, -90, "1000000") });
+  });
+
+  it("buys below the price with typed prices, keeping the 50 bins nearest the price", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📌 Limit order");
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click("🔴 Sell SOL above price · tap for buy");
+    await ui.fill("✏️ Min price", "140");
+    await ui.fill("✏️ Max price", "149");
+    expect(ui.lastScreen().text).toContain("capped at 50 bins nearest the price");
+    await ui.click("25%");
+    await ui.click("✅ Review");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("dlmm/limit-order/place", { vault: VAULT, lbPair: POOL, side: "bid", bins: evenBins(-155, -106, "5000") });
+  });
+
+  it("keeps a 1% preset to the first two bins on a pool whose bins are wider than 1%", async () => {
+    const ui = setup({ ...tradingApi(), getPool: vi.fn(async () => ({ ...pool, binStep: 100 })) });
+    await openVault(ui, "📌 Limit order");
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.click("+1%");
+    expect(ui.lastScreen().text).toContain("<i>2 bins, the amount split evenly</i>");
+  });
+
+  it("explains a sell range that reaches below the price and offers no review", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📌 Limit order");
+    await ui.fill("🏊 Pick pool", POOL);
+    await ui.fill("✏️ Min price", "140");
+    await ui.click("Max");
+    expect(ui.lastScreen().text).toContain("A sell order must sit above the current price.");
+    expect(ui.buttons().map((b) => b.text)).not.toContain("✅ Review");
+  });
+});
+
 describe("wallets", () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -1298,6 +1363,69 @@ describe("phoenix", () => {
       reduceOnly: false,
       order: { type: "market", slippageBps: 500 },
     });
+  });
+
+  it("arms a take-profit and stop-loss with a market long", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🆕 New order");
+    await ui.click("SOL");
+    await ui.fill("✏️ Size", "1");
+    await ui.fill("🎯 Take profit", "180");
+    await ui.fill("🛡 Stop loss", "120");
+    expect(ui.lastScreen().text).toContain("Take profit $180 · stop loss $120");
+    await ui.click("✅ Review");
+    expect(ui.lastScreen().text).toContain("Take profit $180 · stop loss $120");
+    await confirm(ui);
+    expect(ui.api.build).toHaveBeenCalledWith("phoenix/order", {
+      vault: VAULT,
+      symbol: "SOL",
+      side: "long",
+      size: "1",
+      reduceOnly: false,
+      order: { type: "market", slippageBps: 100 },
+      tpSl: { takeProfit: "180", stopLoss: "120" },
+    });
+  });
+
+  it("refuses a long take-profit below the mark and hides TP/SL on limit orders", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🆕 New order");
+    await ui.click("SOL");
+    await ui.fill("✏️ Size", "1");
+    await ui.fill("🎯 Take profit", "100");
+    await ui.click("✅ Review");
+    expect(ui.alerts()).toContain("For a long, the take-profit must be above the mark price ($150.25).");
+    await ui.click("⚡ Market order · tap for limit");
+    expect(ui.buttons().some((b) => b.text.startsWith("🎯"))).toBe(false);
+  });
+
+  it("refuses a short take-profit at the mark, and a 16-digit trigger", async () => {
+    const ui = setup(tradingApi());
+    await openVault(ui, "📈 Phoenix");
+    await ui.click("🆕 New order");
+    await ui.click("SOL");
+    await ui.click("🟢 Long · tap for short");
+    await ui.fill("✏️ Size", "1");
+    await ui.fill("🎯 Take profit", "150.25");
+    await ui.click("✅ Review");
+    expect(ui.alerts()).toContain("For a short, the take-profit must be below the mark price ($150.25).");
+    await ui.fill("🛡 Stop loss", "1234567890123456");
+    expect(ui.replies.at(-1)).toContain("Send the stop-loss price as a positive number");
+  });
+
+  it("says when armed TP/SL could not be read", async () => {
+    const ui = setup({ getPhoenix: vi.fn(async () => ({ ...phoenixReady, tpSl: null })) });
+    await openVault(ui, "📈 Phoenix");
+    expect(ui.lastScreen().text).toContain("<i>Armed TP/SL could not be read right now.</i>");
+  });
+
+  it("shows armed TP/SL brackets on the Phoenix screen", async () => {
+    const tpSl = [{ symbol: "SOL", index: 0, greaterPrice: "180", lessPrice: "120", closes: "long" as const }];
+    const ui = setup({ getPhoenix: vi.fn(async () => ({ ...phoenixReady, tpSl })) });
+    await openVault(ui, "📈 Phoenix");
+    expect(ui.lastScreen().text).toContain("SOL long · 🎯 TP $180 · 🛡 SL $120");
   });
 
   it("places a post-only, reduce-only limit order on a typed market", async () => {

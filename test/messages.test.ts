@@ -33,7 +33,7 @@ import {
   removeRangeAmountMessage,
 } from "../src/messages";
 import type { LpForm, OrderForm, SwapForm, VaultForm } from "../src/forms";
-import { VAULT, holdings, navHistory, phoenixNone, phoenixReady, phoenixRegistered, quote, requestQueue, strategies, strategyHistory, vaultDetail, vaultSummary } from "./fixtures";
+import { VAULT, holdings, limitOrder, navHistory, phoenixNone, phoenixReady, phoenixRegistered, quote, requestQueue, strategies, strategyHistory, vaultDetail, vaultSummary } from "./fixtures";
 import { assertTelegramHtml } from "./telegram-html";
 
 const HOSTILE = `<b>&"x"</b>`;
@@ -284,6 +284,37 @@ describe("messages", () => {
       ].join("\n"),
     );
     expect(strategiesMessage(vaultSummary, [])).toBe("🧩 <b>Demo</b> · strategies\n\nNo open strategies.");
+  });
+
+  it("shows a limit order's side, range, fill, proceeds, and fees", () => {
+    expect(strategiesMessage(vaultSummary, [limitOrder])).toBe(
+      [
+        "🧩 <b>Demo</b> · strategies (1)",
+        "",
+        "📌 <b>SOL/USDC</b> · limit sell SOL · 🟡 37% filled",
+        "├ Range <b>151 – 152</b> · now 150",
+        "├ Left 0.25 SOL of 0.4 SOL",
+        "├ Got 22.65 USDC",
+        "└ Fees 0 SOL + 0.01 USDC",
+        "<code>LimitOrder111111111111111111111111111111111</code>",
+      ].join("\n"),
+    );
+    const bid = { ...limitOrder, side: "bid" as const, depositX: "0", depositY: "300000000", unfilledX: "0", unfilledY: "300000000", proceedsY: "0" };
+    expect(strategiesMessage(vaultSummary, [bid]).split("\n")[2]).toBe("📌 <b>SOL/USDC</b> · limit buy SOL · ⏳ waiting");
+    const done = { ...limitOrder, unfilledX: "0" };
+    expect(strategiesMessage(vaultSummary, [done]).split("\n")[2]).toBe("📌 <b>SOL/USDC</b> · limit sell SOL · ✅ filled");
+  });
+
+  it("lists a limit order among the vault's positions", () => {
+    expect(vaultMessage(vaultSummary, holdings, [limitOrder]).split("\n").slice(-2)).toEqual([
+      "<b>Positions</b>",
+      "📌 <b>SOL/USDC</b> limit sell SOL · 151 – 152 · 🟡 37% filled",
+    ]);
+  });
+
+  it("labels a closed limit order in history", () => {
+    const closed = strategyHistory.map((item) => ({ ...item, type: "dlmm_limit_order" as const }));
+    expect(strategyHistoryMessage(vaultSummary, closed)).toContain("<b>Limit order</b> · USDC/SOL");
   });
 
   it("renders a swap confirm as a receipt with a fresh quote", () => {

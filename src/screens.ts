@@ -5,6 +5,7 @@ import {
   type FormDeps,
   QUICK_PICKS,
   amountsInRange,
+  createLimitOrderForm,
   createLpForm,
   createOrderForm,
   createPhoenixTransferForm,
@@ -200,6 +201,7 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
         ),
         keyboard: keyboard([
           [to("💱 Swap", "newSwap"), to("➕ New LP", "newLp")],
+          [to("📌 Limit order", "newLimitOrder")],
           [to("🧩 Strategies", "strategies"), to("📈 Phoenix", "phoenix")],
           [to("📊 NAV history", "navHistory"), to("📋 Requests", "requests")],
           [to("🗂 History", "strategyHistory"), to("⚙️ Settings", "settings")],
@@ -289,6 +291,10 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
           const refId = deps.positions.put({ vault: vault.address, position: strategy.position });
           return [[button(`⚙️ ${pairLabel(strategy)} position`, { kind: "position", refId })]];
         }
+        if (strategy.type === "dlmm_limit_order") {
+          const label = `${strategy.tokenX.symbol}/${strategy.tokenY.symbol} limit ${strategy.side === "ask" ? "sell" : "buy"}`;
+          return [[confirmButton(deps, `✖️ Cancel ${label}`, { kind: "limitOrderCancel", vault: vault.address, limitOrder: strategy.limitOrder, label: `${label} order` })]];
+        }
         if (strategy.type === "jupiter" && strategy.vaultBalance === "0") {
           const action: PendingAction = { kind: "closeStrategy", vault: vault.address, strategy: strategy.address, label: `${strategy.symbol} swap strategy` };
           return [[confirmButton(deps, `🗑 Close empty ${strategy.symbol} strategy`, action)]];
@@ -366,6 +372,10 @@ export async function renderScreen(screen: Screen, deps: ScreenDeps): Promise<Re
     case "newLp": {
       const vault = await findVault(api, screen.vault);
       return renderForm(deps.forms.put(await createLpForm(api, vault.address)), deps);
+    }
+    case "newLimitOrder": {
+      const vault = await findVault(api, screen.vault);
+      return renderForm(deps.forms.put(await createLimitOrderForm(api, vault.address)), deps);
     }
     case "addLp": {
       const { vault, strategy } = await findPosition(deps, screen.refId);

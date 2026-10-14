@@ -49,11 +49,11 @@ commands below also work.
 | `/wallet` | Import, create, export, or switch wallets |
 | `/vaults` | Numbered list of vaults the active wallet manages |
 | `/holdings <vault>` | Vault overview: live value vs last NAV, per-token exposure, open LP and perps positions |
-| `/strategies <vault>` | Open Jupiter, Meteora DLMM, and Phoenix strategies |
+| `/strategies <vault>` | Open Jupiter, Meteora DLMM positions and limit orders, and Phoenix strategies |
 | `/nav <vault>` | The last 10 posted NAVs, newest first, with admin overrides flagged |
 | `/requests <vault>` | Queued deposits and withdrawals, and whether each can settle yet |
 | `/history <vault>` | The last 10 closed strategies with realized PnL per token |
-| `/phoenix <vault>` | Phoenix perps: setup step, margin, positions, open orders |
+| `/phoenix <vault>` | Phoenix perps: setup step, margin, positions, armed TP/SL, open orders |
 | `/settings <vault>` | Fees, limits, status, pause flags, pending totals |
 
 `<vault>` is a vault address or its number from `/vaults`. The vault screen has a button for
@@ -77,12 +77,14 @@ match is reported as `contract_mismatch` instead of being shown half-parsed.
 | DLMM position | 🗑 Close position (removes all liquidity, claims fees) | `dlmm/close` |
 | Vault → ➕ New LP | Pool · range (up to 70 bins) · 🫙 Empty position | `dlmm/initialize` |
 | Strategies | 🗑 Close empty strategy | `strategy/close` |
+| Vault → 📌 Limit order | Pool (pasted address, or symbol search) · 🔴 sell token X above the price or 🟢 buy it below · range +/−1 / 2 / 5 / 10% from the price, or typed min and max price (kept to the 50 bins nearest the price) · amount of the sold token (25% / 50% / Max or typed), split evenly over the bins | `dlmm/limit-order/place` |
+| Strategies | ✖️ Cancel a limit order: cancels every bin, pays the unfilled amount, proceeds, and fees back to the vault, and closes the order | `dlmm/limit-order/cancel` |
 | Strategies | 🧹 Sell all TOKEN & close, on each swap strategy holding a non-deposit token: sells the whole balance to the deposit token and closes the strategy (rent back to the manager) in one transaction; refused while an open LP position or order uses the token | `jupiter/sweep`, 100 bps |
 | Strategies → ➕ Track token | A pasted contract address (Jupiter verification shown) | `jupiter/initialize` |
 | Vault → 📈 Phoenix | 🚀 Set up Phoenix (shown when the vault has no Phoenix strategy) | `phoenix/initialize` |
 | Vault → 📈 Phoenix | 🤝 Onboard trader (shown after setup) | `onboardPhoenix` (`phoenix/onboard`) |
 | Vault → 📈 Phoenix | 💵 Deposit USDC · 📤 Withdraw: amount (`1.5`, `25%`, `max`) | `phoenix/deposit`, `phoenix/withdraw` |
-| Vault → 📈 Phoenix → 🆕 New order | Market (button or typed symbol) · long or short · size (`0.5`) · market with slippage (0.5 / 1 / 3% or typed, up to 20%) or limit with price and post-only · reduce-only | `phoenix/order` |
+| Vault → 📈 Phoenix → 🆕 New order | Market (button or typed symbol) · long or short · size (`0.5`) · market with slippage (0.5 / 1 / 3% or typed, up to 20%) or limit with price and post-only · reduce-only · 🎯 take-profit and 🛡 stop-loss prices on a market order that is not reduce-only | `phoenix/order` (`tpSl`) |
 | Vault → 📈 Phoenix | ✖️ Cancel all orders on one market · 🧹 Sweep a queued withdrawal | `phoenix/cancel` (`orders: "all"`), `phoenix/sweep` |
 | Vault → ⚙️ Settings | ⏸/▶️ deposits or withdrawals · status Normal / Reduce-only / Paused | `vault/update` (one field) |
 | Vault → ⚙️ Settings → ✏️ Edit fees and limits | Fees in % · deposit cap (or `none`) · min deposit · min withdrawal shares | `vault/update` (only the changed fields) |
@@ -152,6 +154,7 @@ missing action so the manager can ask the admin for it.
 | Zap out | `dlmm/zap-out`, `dlmm/zap-out/swap`, `jupiter/sweep` |
 | Sell all & close | `jupiter/sweep` |
 | Close position · close empty strategy | `dlmm/close`, `strategy/close` |
+| Limit orders | `dlmm/limit-order/place`, `dlmm/limit-order/cancel` |
 | Phoenix setup | `phoenix/initialize`, then `phoenix/onboard` |
 | Phoenix funds and trading | `phoenix/deposit`, `phoenix/withdraw`, `phoenix/order`, `phoenix/cancel`, `phoenix/sweep` |
 | Settings | `vault/update`, `vault/claim-fee`, `vault/close` |
