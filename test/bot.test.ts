@@ -13,6 +13,7 @@ import { Keypair, PublicKey, TransactionInstruction, TransactionMessage, Version
 import bs58 from "bs58";
 import { randomBytes } from "node:crypto";
 import { createBot } from "../src/bot";
+import { createUsernameStore } from "../src/telegram-users";
 import { createWalletStore } from "../src/wallets";
 import {
   POOL,
@@ -118,11 +119,13 @@ function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = ma
   const background: Promise<void>[] = [];
   const wallets = createWalletStore(undefined, randomBytes(32));
   const listedWith: string[] = [];
+  const usernames = createUsernameStore(undefined);
   if (wallet) wallets.setApiKey(ALLOWED_USER, wallets.add(ALLOWED_USER, wallet, "imported").wallet.id, API_KEY);
   const bot = createBot({
     token: "123:test",
     allowedUserIds: new Set([ALLOWED_USER]),
     wallets,
+    usernames,
     // Records which wallet API key each vault list was read with.
     clientFor: (apiKey) => ({
       ...api,
@@ -178,7 +181,7 @@ function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = ma
     await click(label);
     await type(text);
   };
-  return { api, bot, wallets, listedWith, send, tap, type, click, fill, buttons, lastScreen, calls, replies, parseModes, settle, alerts };
+  return { api, bot, wallets, usernames, listedWith, send, tap, type, click, fill, buttons, lastScreen, calls, replies, parseModes, settle, alerts };
 }
 
 describe("bot", () => {
@@ -199,6 +202,27 @@ describe("bot", () => {
     expect(replies).toEqual([]);
     expect(api.listVaults).not.toHaveBeenCalled();
     expect(api.getHoldings).not.toHaveBeenCalled();
+  });
+
+  it("remembers the usernames of allowed users in private chats only", async () => {
+    const { bot, usernames } = setup();
+    const from = (id: number, username: string, chatType: "private" | "group") =>
+      bot.handleUpdate({
+        update_id: 4,
+        message: {
+          message_id: 1,
+          date: 0,
+          chat: chatType === "private" ? { id, type: "private", first_name: "T" } : { id: -5, type: "group", title: "G" },
+          from: { id, is_bot: false, first_name: "T", username },
+          text: "hi",
+        },
+      });
+    await from(ALLOWED_USER, "Hedgin_Manager", "private");
+    await from(7, "stranger_one", "private");
+    await from(ALLOWED_USER, "group_name", "group");
+    expect(usernames.idOf("hedgin_manager")).toBe(ALLOWED_USER);
+    expect(usernames.idOf("stranger_one")).toBeUndefined();
+    expect(usernames.idOf("group_name")).toBeUndefined();
   });
 
   it("resolves a vault by its /vaults number, address, or name", async () => {

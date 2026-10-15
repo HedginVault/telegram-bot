@@ -22,6 +22,13 @@ describe("loadConfig", () => {
     expect(loadConfig({ ...validEnv, HEDGE_API_BASE_URL: "https://hedgin.xyz/api/external/v1" }).apiBaseUrl).toBe("https://hedgin.xyz");
     expect(loadConfig({ ...validEnv, HEDGE_API_BASE_URL: "https://hedgin.xyz/api/external/v1/" }).apiBaseUrl).toBe("https://hedgin.xyz");
   });
+  it("leaves key delivery off unless a long enough secret is set", () => {
+    expect(loadConfig(validEnv)).toMatchObject({ keyDeliverySecret: undefined, keyDeliveryPort: 8080, usernameStorePath: "data/telegram-users.json" });
+    expect(loadConfig({ ...validEnv, KEY_DELIVERY_SECRET: "" }).keyDeliverySecret).toBeUndefined();
+    expect(loadConfig({ ...validEnv, KEY_DELIVERY_SECRET: "k".repeat(32), KEY_DELIVERY_PORT: "9000" })).toMatchObject({ keyDeliverySecret: "k".repeat(32), keyDeliveryPort: 9000 });
+    expect(() => loadConfig({ ...validEnv, KEY_DELIVERY_SECRET: "short" })).toThrow(/KEY_DELIVERY_SECRET/);
+    expect(() => loadConfig({ ...validEnv, KEY_DELIVERY_SECRET: "short" })).not.toThrow(/short/);
+  });
   it("is public when no allowlist is set", () => {
     expect(loadConfig({ ...validEnv, ALLOWED_TELEGRAM_USER_IDS: undefined }).allowedUserIds).toBeUndefined();
   });
