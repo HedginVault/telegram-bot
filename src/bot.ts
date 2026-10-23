@@ -7,7 +7,6 @@ import { HELP_MESSAGE, errorHint, errorMessage, executionMessage, fitMessage } f
 import { type ScreenDeps, renderScreen } from "./screens";
 import { type RenderedScreen, type Screen, ScreenNotice, type TextField, button, createIdStore, decodeScreen, isWalletScreen, keyboard } from "./ui";
 import { EXPORT_VISIBLE_SECONDS, type WalletInput, type WalletResult, applyWalletText, walletScreen } from "./wallet-screens";
-import type { UsernameStore } from "./telegram-users";
 import { WalletError, type WalletStore, parseSecretKey } from "./wallets";
 
 /** An input problem the user can fix by retyping the command. */
@@ -73,18 +72,6 @@ function looksLikePrivateKey(text: string): boolean {
   }
 }
 
-/** Proves the API accepts a key before a wallet stores it. */
-export function apiKeyChecker(clientFor: (apiKey: string) => HedgeClient) {
-  return async (apiKey: string): Promise<void> => {
-    try {
-      await clientFor(apiKey).listVaults();
-    } catch (error) {
-      if (error instanceof ApiError && error.status === 401) throw new WalletError("The API rejected that key: it is wrong, revoked, or expired.");
-      throw error;
-    }
-  };
-}
-
 /**
  * One user's active wallet with its API client and button stores. Switching wallets builds a
  * new session, so buttons made for the old wallet expire instead of acting with the new one.
@@ -108,8 +95,6 @@ export function createBot(options: {
   /** Unset means anyone can use the bot. */
   allowedUserIds?: ReadonlySet<number>;
   wallets: WalletStore;
-  /** Learns each user's @username so the key-delivery endpoint can find them. */
-  usernames?: UsernameStore;
   /** An API client acting with one wallet's API key. */
   clientFor: (apiKey: string) => HedgeClient;
   /** Actions outlive their button tap; tests pass a collector to await them. */
@@ -214,21 +199,19 @@ export function createBot(options: {
     if (result.kind === "show") await show(result.screen);
   }
 
-  const checkApiKey = apiKeyChecker(clientFor);
+  async function checkApiKey(apiKey: string): Promise<void> {
+    try {
+      await clientFor(apiKey).listVaults();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 401) throw new WalletError("The API rejected that key: it is wrong, revoked, or expired.");
+      throw error;
+    }
+  }
 
   // Keys get pasted here, so the bot never works in groups where others could read them.
   bot.use((ctx, next) => (ctx.chat?.type === "private" ? next() : undefined));
   // With an allowlist, unknown users get no reply, so the bot does not confirm it exists.
   bot.use((ctx, next) => (ctx.from && (!options.allowedUserIds || options.allowedUserIds.has(ctx.from.id)) ? next() : undefined));
-  bot.use((ctx, next) => {
-    try {
-      if (ctx.from?.username) options.usernames?.record(ctx.from.username, ctx.from.id);
-    } catch (error) {
-      // Key delivery is a convenience; a failed write must not block the user's update.
-      console.error("[telegram-bot] username store write failed", error instanceof Error ? error.message : "unknown error");
-    }
-    return next();
-  });
 
   bot.start(async (ctx) => replyScreen(ctx, await renderFor(ctx.from.id, { kind: "vaults" })));
   bot.command("vaults", async (ctx) => replyScreen(ctx, await renderFor(ctx.from.id, { kind: "vaults" })));

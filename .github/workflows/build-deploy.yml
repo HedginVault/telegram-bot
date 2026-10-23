@@ -116,7 +116,6 @@ jobs:
         run: |
           kubectl -n "$NAMESPACE" apply -f "$MANIFESTS/pvc.yaml"
           kubectl -n "$NAMESPACE" apply -f "$MANIFESTS/configmap.yaml"
-          kubectl -n "$NAMESPACE" apply -f "$MANIFESTS/service.yaml"
           sed "s|__IMAGE_TAG__|${IMAGE_TAG}|g" "$MANIFESTS/deployment.yaml" \
             | kubectl -n "$NAMESPACE" apply -f -
 

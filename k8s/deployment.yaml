@@ -27,9 +27,6 @@ spec:
       containers:
         - name: telegram-bot
           image: ghcr.io/hedginvault/telegram-bot:__IMAGE_TAG__
-          ports:
-            - name: key-delivery
-              containerPort: 8080
           envFrom:
             - configMapRef:
                 name: telegram-bot-config

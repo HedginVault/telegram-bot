@@ -21,13 +21,6 @@ const BotEnvSchema = z.object({
     }),
   WALLET_STORE_PATH: z.string().min(1).default("data/wallets.json"),
   WALLET_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (openssl rand -hex 32)"),
-  TELEGRAM_USERS_PATH: z.string().min(1).default("data/telegram-users.json"),
-  KEY_DELIVERY_SECRET: z
-    .string()
-    .optional()
-    .transform((value) => (value === undefined || value.trim() === "" ? undefined : value))
-    .pipe(z.string().min(32, "must be at least 32 characters (openssl rand -hex 32)").optional()),
-  KEY_DELIVERY_PORT: z.coerce.number().int().min(1).max(65535).default(8080),
   HEDGE_PROGRAM_ID: z.string().regex(BASE58_KEY, "must be a base58 program id").default(DEFAULT_PROGRAM_ID),
 });
 
@@ -39,10 +32,6 @@ export interface Config {
   walletStorePath: string;
   walletEncryptionKey: Buffer;
   programId: string;
-  usernameStorePath: string;
-  /** Unset leaves the key-delivery endpoint off. */
-  keyDeliverySecret: string | undefined;
-  keyDeliveryPort: number;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
@@ -61,8 +50,5 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     walletStorePath: data.WALLET_STORE_PATH,
     walletEncryptionKey: Buffer.from(data.WALLET_ENCRYPTION_KEY, "hex"),
     programId: data.HEDGE_PROGRAM_ID,
-    usernameStorePath: data.TELEGRAM_USERS_PATH,
-    keyDeliverySecret: data.KEY_DELIVERY_SECRET,
-    keyDeliveryPort: data.KEY_DELIVERY_PORT,
   };
 }
