@@ -1,4 +1,5 @@
 import { createHedgeClient } from "@hedginxyz/sdk";
+import { createAlertsLink } from "./alerts-link";
 import { createBot } from "./bot";
 import { loadConfig } from "./config";
 import { createWalletStore } from "./wallets";
@@ -10,6 +11,7 @@ const bot = createBot({
   allowedUserIds: config.allowedUserIds,
   wallets,
   clientFor: (apiKey) => createHedgeClient({ baseUrl: config.apiBaseUrl, apiKey, programId: config.programId }),
+  alerts: createAlertsLink(fetch, config.apiBaseUrl, config.alertsLinkSecret),
 });
 
 process.once("SIGINT", () => bot.stop("SIGINT"));

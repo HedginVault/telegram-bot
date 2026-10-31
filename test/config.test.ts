@@ -28,6 +28,11 @@ describe("loadConfig", () => {
   it("rejects non-numeric user IDs", () => {
     expect(() => loadConfig({ ...validEnv, ALLOWED_TELEGRAM_USER_IDS: "111,@alice" })).toThrow(/ALLOWED_TELEGRAM_USER_IDS/);
   });
+  it("leaves alert linking off unless a long enough secret is set", () => {
+    expect(loadConfig(validEnv).alertsLinkSecret).toBeUndefined();
+    expect(loadConfig({ ...validEnv, ALERTS_LINK_SECRET: "k".repeat(32) }).alertsLinkSecret).toBe("k".repeat(32));
+    expect(() => loadConfig({ ...validEnv, ALERTS_LINK_SECRET: "short" })).toThrow(/ALERTS_LINK_SECRET/);
+  });
   it("names missing variables without echoing secret values", () => {
     const run = () => loadConfig({ ...validEnv, TELEGRAM_BOT_TOKEN: undefined, WALLET_ENCRYPTION_KEY: "not-a-key" });
     expect(run).toThrow(/TELEGRAM_BOT_TOKEN/);

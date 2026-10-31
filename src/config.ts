@@ -22,6 +22,7 @@ const BotEnvSchema = z.object({
   WALLET_STORE_PATH: z.string().min(1).default("data/wallets.json"),
   WALLET_ENCRYPTION_KEY: z.string().regex(/^[0-9a-fA-F]{64}$/, "must be 64 hex characters (openssl rand -hex 32)"),
   HEDGE_PROGRAM_ID: z.string().regex(BASE58_KEY, "must be a base58 program id").default(DEFAULT_PROGRAM_ID),
+  ALERTS_LINK_SECRET: z.string().min(32, "must be at least 32 characters").optional(),
 });
 
 export interface Config {
@@ -32,6 +33,8 @@ export interface Config {
   walletStorePath: string;
   walletEncryptionKey: Buffer;
   programId: string;
+  /** Shared with the app for alert linking; unset turns linking off. */
+  alertsLinkSecret: string | undefined;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv): Config {
@@ -50,5 +53,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     walletStorePath: data.WALLET_STORE_PATH,
     walletEncryptionKey: Buffer.from(data.WALLET_ENCRYPTION_KEY, "hex"),
     programId: data.HEDGE_PROGRAM_ID,
+    alertsLinkSecret: data.ALERTS_LINK_SECRET,
   };
 }
