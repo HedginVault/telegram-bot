@@ -2,6 +2,7 @@ import { ApiError, type HedgeClient, type Outcome, type Progress, type Transacti
 import { type Context, Telegraf, TelegramError } from "telegraf";
 import { callbackQuery, message } from "telegraf/filters";
 import { type PendingAction, actionScope, actionVault, executeAction } from "./actions";
+import { ALERTS_NOT_SET_UP, type AlertsLink, isAlertLinkCode } from "./alerts-link";
 import { InputError, applyFormOp, applyFormText } from "./forms";
 import { HELP_MESSAGE, errorHint, errorMessage, executionMessage, fitMessage } from "./messages";
 import { type ScreenDeps, renderScreen } from "./screens";
@@ -99,6 +100,8 @@ export function createBot(options: {
   clientFor: (apiKey: string) => HedgeClient;
   /** Actions outlive their button tap; tests pass a collector to await them. */
   runInBackground?: (task: Promise<void>) => void;
+  /** Unset means alert linking replies that it is not set up. */
+  alerts?: AlertsLink;
 }): Telegraf {
   const { wallets, clientFor } = options;
   const runInBackground = options.runInBackground ?? ((task: Promise<void>) => void task);
@@ -210,6 +213,18 @@ export function createBot(options: {
 
   // Keys get pasted here, so the bot never works in groups where others could read them.
   bot.use((ctx, next) => (ctx.chat?.type === "private" ? next() : undefined));
+  // Alert linking is for browser-wallet managers, who are not on the allowlist. A /start without
+  // a link code falls through to the vault menu behind the allowlist.
+  bot.start(async (ctx, next) => {
+    if (!isAlertLinkCode(ctx.payload)) return next();
+    const reply = options.alerts
+      ? await options.alerts.claim({ code: ctx.payload, chatId: String(ctx.chat.id), username: ctx.from.username ?? null })
+      : ALERTS_NOT_SET_UP;
+    await ctx.reply(reply);
+  });
+  bot.command("alerts_off", async (ctx) => {
+    await ctx.reply(options.alerts ? await options.alerts.unlink(String(ctx.chat.id)) : ALERTS_NOT_SET_UP);
+  });
   // With an allowlist, unknown users get no reply, so the bot does not confirm it exists.
   bot.use((ctx, next) => (ctx.from && (!options.allowedUserIds || options.allowedUserIds.has(ctx.from.id)) ? next() : undefined));
 
