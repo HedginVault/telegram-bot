@@ -78,7 +78,7 @@ jobs:
 
       - name: Type-check, test, build
         run: |
-          yarn typecheck
+          yarn run check
           yarn test
           yarn build
 
