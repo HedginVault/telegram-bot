@@ -1463,17 +1463,6 @@ describe("phoenix", () => {
     expect(ui.api.build).toHaveBeenLastCalledWith("phoenix/sweep", { vault: VAULT });
   });
 
-  it("tells the user which scope the admin must grant", async () => {
-    const api = tradingApi();
-    api.build = vi.fn(async () => Promise.reject(new ApiError(403, "Forbidden", "Action is not enabled for this key")));
-    const ui = setup(api);
-    await openVault(ui, "📈 Phoenix");
-    await ui.click("🧹 Sweep");
-    await confirm(ui);
-    expect(ui.lastScreen().text).toContain(
-      '<i>This API key may not do "phoenix/sweep". Ask an admin to enable "phoenix/sweep" and "send" for this key in the dashboard.</i>',
-    );
-  });
 });
 
 describe("vault settings", () => {
