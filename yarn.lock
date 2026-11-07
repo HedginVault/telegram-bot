@@ -137,10 +137,10 @@
   resolved "https://registry.yarnpkg.com/@esbuild/win32-x64/-/win32-x64-0.28.2.tgz#b21affb804cc167c133d95f45b3a1dc1323b9a87"
   integrity sha512-5ebpxr3nWMzrL/rnUI755Jkuee0bHL/Gq0WTF9lvcpv73wAp5eu8MfBUgWK9bhWvZjj7yX8etf/8tI8Ney695g==
 
-"@hedginxyz/sdk@^0.2.0":
-  version "0.2.0"
-  resolved "https://registry.yarnpkg.com/@hedginxyz/sdk/-/sdk-0.2.0.tgz#40e9e1adce88ebe3b2003507e6b405affdc57375"
-  integrity sha512-9AU87Mwb/ygGZGr66AgV+w+41YJvRNTNz96iaFXWQUzBZ/UV/14WBbJD1uEGA6Uq6LGJYyGsjS/l5fIkFarxkg==
+"@hedginxyz/sdk@^0.4.1":
+  version "0.4.1"
+  resolved "https://registry.yarnpkg.com/@hedginxyz/sdk/-/sdk-0.4.1.tgz#3be1a2cbbcf66eae0fb7c61453951ee59ef32b27"
+  integrity sha512-0XaGp4Uf6szlNfR7nDT6JRba9dzbo2etm4fwcf23uYImyMg1P897uRg6DEr1b74v49lHxuKWOda1qTaUtlW8zA==
   dependencies:
     bs58 "4.0.1"
     zod "^3.23"

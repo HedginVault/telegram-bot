@@ -376,7 +376,7 @@ export const shapeLabel = (shape: DlmmShape) => SHAPE_LABEL[shape];
  * tokens inside LP positions, fees, and Phoenix, which a deposit or swap cannot move.
  */
 const idleBalanceOf = (vault: VaultDetail, mint: string) =>
-  mint === vault.depositMint ? vault.idleBalance : vault.unmanagedHoldings.find((h) => h.token.mint === mint)?.amount ?? "0";
+  mint === vault.depositMint ? vault.idleBalance : vault.unmanagedHoldings?.find((h) => h.token.mint === mint)?.amount ?? "0";
 const tokenRef = ({ mint, symbol, decimals }: TokenRef): TokenRef => ({ mint, symbol, decimals });
 export const fmt = (baseUnits: string, token: TokenRef) => `${formatUnits(baseUnits, token.decimals)} ${token.symbol}`;
 

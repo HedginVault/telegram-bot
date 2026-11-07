@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   type BuiltStep,
-  DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  DEFAULT_MAX_PRIORITY_FEE_LAMPORTS,
   type HedgeClient,
   executeBuild,
   toBuildRequest,
@@ -110,7 +110,7 @@ function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = ma
         toBuildRequest(request),
         api,
         signer,
-        { manager: signer.publicKey, programId: PROGRAM_ID, maxComputeUnitPriceMicroLamports: DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS },
+        { manager: signer.publicKey, programId: PROGRAM_ID, maxPriorityFeeLamports: DEFAULT_MAX_PRIORITY_FEE_LAMPORTS },
         options,
       ),
     ...overrides,
