@@ -371,12 +371,23 @@ export type FormResult = { kind: "show"; screen: Screen } | { kind: "ask"; field
 const SHAPE_LABEL: Record<DlmmShape, string> = { spot: "Spot", curve: "Curve", bidAsk: "Bid-Ask" };
 export const shapeLabel = (shape: DlmmShape) => SHAPE_LABEL[shape];
 
+/** A vault read plus what it can spend now, keyed by mint. */
+type FundedVault = VaultDetail & { spendable: ReadonlyMap<string, string> };
+
 /**
- * What the vault can spend now: tokens in its own token accounts. `getHoldings` totals also count
- * tokens inside LP positions, fees, and Phoenix, which a deposit or swap cannot move.
+ * Spendable means the deposit token's idle balance and each Jupiter strategy's held token, as the app's
+ * forms count it. `getHoldings` totals also count tokens inside LP positions, fees, and Phoenix, which a
+ * deposit or swap cannot move.
  */
-const idleBalanceOf = (vault: VaultDetail, mint: string) =>
-  mint === vault.depositMint ? vault.idleBalance : vault.unmanagedHoldings?.find((h) => h.token.mint === mint)?.amount ?? "0";
+async function fundedVault(api: HedgeClient, vault: string): Promise<FundedVault> {
+  const [detail, strategies] = await Promise.all([api.getVault(vault), api.getStrategies(vault)]);
+  const spendable = new Map<string, string>();
+  for (const s of strategies) if (s.type === "jupiter") spendable.set(s.targetMint, s.vaultBalance);
+  spendable.set(detail.depositMint, detail.idleBalance);
+  return { ...detail, spendable };
+}
+
+const idleBalanceOf = (vault: FundedVault, mint: string) => vault.spendable.get(mint) ?? "0";
 const tokenRef = ({ mint, symbol, decimals }: TokenRef): TokenRef => ({ mint, symbol, decimals });
 export const fmt = (baseUnits: string, token: TokenRef) => `${formatUnits(baseUnits, token.decimals)} ${token.symbol}`;
 
@@ -919,7 +930,7 @@ export async function applyFormText(formId: string, field: TextField, text: stri
         if (!input) throw expired();
         const amount = parseAmountInput(text, input.decimals);
         // Check the balance here so a bad amount re-asks instead of failing the quote.
-        if (resolveAmount(amount, idleBalanceOf(await deps.api.getVault(form.vault), input.mint)) === "0") throw new InputError(`The vault holds no ${input.symbol}.`);
+        if (resolveAmount(amount, idleBalanceOf(await fundedVault(deps.api, form.vault), input.mint)) === "0") throw new InputError(`The vault holds no ${input.symbol}.`);
         form.amount = amount;
         return { kind: "swapQuote", formId };
       }
@@ -974,7 +985,7 @@ async function lpAction(form: LpForm, api: HedgeClient): Promise<PendingAction> 
   const pool = form.pool;
   if (!pool) throw new InputError("Pick a pool first.");
   if (!form.amountX && !form.amountY) throw new InputError("Set an amount for at least one token.");
-  const vault = await api.getVault(form.vault);
+  const vault = await fundedVault(api, form.vault);
   const amountX = form.amountX ? resolveAmount(form.amountX, idleBalanceOf(vault, pool.tokenX.mint)) : "0";
   const amountY = form.amountY ? resolveAmount(form.amountY, idleBalanceOf(vault, pool.tokenY.mint)) : "0";
   if (amountX === "0" && amountY === "0") throw new InputError("Those amounts are zero at the vault's current balances.");
@@ -1022,7 +1033,7 @@ function emptyPositionAction(form: LpForm): PendingAction {
 async function phoenixTransferAction(form: PhoenixTransferForm, api: HedgeClient): Promise<PendingAction> {
   if (!form.amount) throw new InputError("Set an amount first.");
   let balance: string;
-  if (form.direction === "deposit") balance = idleBalanceOf(await api.getVault(form.vault), form.usdc.mint);
+  if (form.direction === "deposit") balance = idleBalanceOf(await fundedVault(api, form.vault), form.usdc.mint);
   else {
     const phoenix = await api.getPhoenix(form.vault);
     const withdrawable = phoenix.account?.withdrawable ?? phoenix.withdrawable;
@@ -1075,7 +1086,7 @@ async function limitOrderAction(form: LimitOrderForm, api: HedgeClient): Promise
   const range = limitOrderRange(form);
   if (typeof range === "string") throw new InputError(range);
   const { sold, bought } = limitOrderTokens(pool, form.side);
-  const amountBaseUnits = resolveAmount(form.amount, idleBalanceOf(await api.getVault(form.vault), sold.mint));
+  const amountBaseUnits = resolveAmount(form.amount, idleBalanceOf(await fundedVault(api, form.vault), sold.mint));
   if (amountBaseUnits === "0") throw new InputError(`The vault holds no idle ${sold.symbol}.`);
   return {
     kind: "limitOrderPlace",
@@ -1112,11 +1123,11 @@ export async function renderForm(formId: string, deps: FormDeps): Promise<Render
   const form = getForm(deps, formId);
   switch (form.kind) {
     case "swap":
-      return renderSwapForm(formId, form, await deps.api.getVault(form.vault), deps);
+      return renderSwapForm(formId, form, await fundedVault(deps.api, form.vault), deps);
     case "lp":
-      return renderLpForm(formId, form, await deps.api.getVault(form.vault));
+      return renderLpForm(formId, form, await fundedVault(deps.api, form.vault));
     case "limitOrder":
-      return renderLimitOrderForm(formId, form, await deps.api.getVault(form.vault));
+      return renderLimitOrderForm(formId, form, await fundedVault(deps.api, form.vault));
     case "phoenixTransfer":
       return renderPhoenixTransferForm(formId, form);
     case "order":
@@ -1193,7 +1204,7 @@ function renderTrackForm(formId: string, form: TrackForm): RenderedScreen {
   return { html: trackFormMessage(form), keyboard: keyboard(rows) };
 }
 
-function renderSwapForm(formId: string, form: SwapForm, vault: VaultDetail, deps: FormDeps): RenderedScreen {
+function renderSwapForm(formId: string, form: SwapForm, vault: FundedVault, deps: FormDeps): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const toVault = button("⬅️ Vault", { kind: "vault", vault: form.vault });
   const back = op("⬅️ Back", { op: "back" });
@@ -1234,7 +1245,7 @@ const marked = ([icon, text]: [string, string], on: boolean) => `${on ? "✅" : 
 /** "±5%" around the price, or "+10%" above / "−10%" below it for one side. */
 export const rangePresetLabel = (side: LpSide, bps: number) => `${side === "both" ? "±" : side === "x" ? "+" : "−"}${bps / 100}%`;
 
-function renderLpForm(formId: string, form: LpForm, vault: VaultDetail): RenderedScreen {
+function renderLpForm(formId: string, form: LpForm, vault: FundedVault): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const pool = form.pool;
   const range = form.mode === "open" ? formRange(form) : undefined;
@@ -1289,7 +1300,7 @@ function renderLpForm(formId: string, form: LpForm, vault: VaultDetail): Rendere
   return { html, keyboard: keyboard(rows) };
 }
 
-function renderLimitOrderForm(formId: string, form: LimitOrderForm, vault: VaultDetail): RenderedScreen {
+function renderLimitOrderForm(formId: string, form: LimitOrderForm, vault: FundedVault): RenderedScreen {
   const op = (text: string, o: FormOp) => formButton(text, formId, o);
   const back = button("⬅️ Vault", { kind: "vault", vault: form.vault });
   const pool = form.pool;
@@ -1324,7 +1335,7 @@ export async function renderSwapQuote(formId: string, deps: FormDeps): Promise<R
   if (form.kind !== "swap") throw expired();
   const tokens = swapTokens(form);
   if (!tokens || !form.amount || !form.token) throw new ScreenNotice("Pick a token and an amount first.");
-  const vault = await deps.api.getVault(form.vault);
+  const vault = await fundedVault(deps.api, form.vault);
   const amountBaseUnits = resolveAmount(form.amount, idleBalanceOf(vault, tokens.input.mint));
   if (amountBaseUnits === "0") throw new InputError(`The vault holds no ${tokens.input.symbol}.`);
   const quote = await deps.api.getQuote({
