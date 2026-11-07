@@ -617,6 +617,11 @@ describe("messages", () => {
     );
   });
 
+  it("names a frozen request, which SDK 0.4 added", () => {
+    const frozen = { ...requestQueue, withdrawals: requestQueue.withdrawals.map((w) => ({ ...w, state: "frozen" as const })) };
+    expect(requestsMessage(vaultSummary, frozen).split("\n")).toContain("• 2 shares from Owne…2222 · frozen until the late NAV lands");
+  });
+
   it("shows realized PnL of closed strategies with signs, hold time, fees, and combined totals", () => {
     expect(strategyHistoryMessage(vaultSummary, strategyHistory)).toBe(
       [

@@ -479,7 +479,12 @@ export function navHistoryMessage(vault: VaultSummary, points: NavHistoryPoint[]
   return [...lines, "", blocks.reverse().join("\n\n")].join("\n");
 }
 
-const requestState = (state: "pending" | "resolvable") => (state === "resolvable" ? "ready to settle" : "waiting for the next NAV");
+const REQUEST_STATE: Record<RequestQueue["deposits"][number]["state"], string> = {
+  pending: "waiting for the next NAV",
+  resolvable: "ready to settle",
+  frozen: "frozen until the late NAV lands",
+};
+const requestState = (state: keyof typeof REQUEST_STATE) => REQUEST_STATE[state];
 
 export function requestsMessage(vault: VaultSummary, queue: RequestQueue): string {
   const lines = [`📋 <b>${escapeHtml(vault.name)}</b> · queued requests`, "", `<b>Deposits</b> (${queue.deposits.length})`];

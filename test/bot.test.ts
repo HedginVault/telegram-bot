@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ApiError,
   type BuiltStep,
-  DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS,
+  DEFAULT_MAX_PRIORITY_FEE_LAMPORTS,
   type HedgeClient,
   executeBuild,
   toBuildRequest,
@@ -110,7 +110,7 @@ function setup(overrides: Partial<HedgeClient> = {}, wallet: Keypair | null = ma
         toBuildRequest(request),
         api,
         signer,
-        { manager: signer.publicKey, programId: PROGRAM_ID, maxComputeUnitPriceMicroLamports: DEFAULT_MAX_COMPUTE_UNIT_PRICE_MICROLAMPORTS },
+        { manager: signer.publicKey, programId: PROGRAM_ID, maxPriorityFeeLamports: DEFAULT_MAX_PRIORITY_FEE_LAMPORTS },
         options,
       ),
     ...overrides,
@@ -292,6 +292,15 @@ describe("buttons", () => {
 
 describe("swap form", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("counts a token as spendable only from its Jupiter strategy, not from total holdings", async () => {
+    const { send, click, lastScreen } = setup({ getStrategies: vi.fn(async () => []) });
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Swap");
+    await click("SOL");
+    expect(lastScreen().text).toContain("Vault has <b>0 SOL</b>");
+  });
 
   it("picks a token, then a direction, then an amount that shows what it spends", async () => {
     const { send, click, buttons, lastScreen, api } = setup();
