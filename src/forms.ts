@@ -1033,7 +1033,10 @@ function emptyPositionAction(form: LpForm): PendingAction {
 async function phoenixTransferAction(form: PhoenixTransferForm, api: HedgeClient): Promise<PendingAction> {
   if (!form.amount) throw new InputError("Set an amount first.");
   let balance: string;
-  if (form.direction === "deposit") balance = idleBalanceOf(await fundedVault(api, form.vault), form.usdc.mint);
+  if (form.direction === "deposit") {
+    const vault = await api.getVault(form.vault);
+    balance = vault.depositMint === form.usdc.mint ? vault.idleBalance : "0";
+  }
   else {
     const phoenix = await api.getPhoenix(form.vault);
     const withdrawable = phoenix.account?.withdrawable ?? phoenix.withdrawable;

@@ -293,6 +293,15 @@ describe("buttons", () => {
 describe("swap form", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  it("counts a token as spendable only from its Jupiter strategy, not from total holdings", async () => {
+    const { send, click, lastScreen } = setup({ getStrategies: vi.fn(async () => []) });
+    await send("/start");
+    await click("1. Demo");
+    await click("💱 Swap");
+    await click("SOL");
+    expect(lastScreen().text).toContain("Vault has <b>0 SOL</b>");
+  });
+
   it("picks a token, then a direction, then an amount that shows what it spends", async () => {
     const { send, click, buttons, lastScreen, api } = setup();
     await send("/start");
